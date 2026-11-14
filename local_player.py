@@ -51,7 +51,7 @@ class RemoteMPD:
                  '-o','ControlMaster=auto','-o','ControlPersist=30','-o','ControlPath=/tmp/unicorntunes-mpd-%C',
                  '-i',str(key),'-p',str(port),user+'@'+host,'unicorntunes-mpd']
         try:
-            result=subprocess.run(command,input=json.dumps(dict(action=action,**args))+'\n',text=True,capture_output=True,timeout=30 if action=='picture' else 12)
+            result=subprocess.run(command,input=json.dumps(dict(action=action,**args))+'\n',text=True,capture_output=True,timeout=45 if action in ('picture','soloist_restart','soloist_status') else 12)
             if len(result.stdout)>24_000_000:raise f.Failure('Local library response is too large.')
             if not result.stdout.strip():raise f.Failure('Local-player SSH connection failed. Check its address, dedicated key and pinned host key.')
             payload=json.loads(result.stdout)
@@ -187,6 +187,23 @@ class LocalPlayback:
         return {'volume':volume,'live':bool(self.local_active)}
 
     def local_action(self,sid,route,body):
+        if route=='/api/host/player-diagnostics':
+            if not self.local_config.get('enabled'):raise f.Failure('Configure the playback-device connection first.')
+            result=self.local.call('soloist_status')
+            devices=self.api.call('/me/player/devices').get('devices',[])
+            selected=next((d for d in devices if d.get('id')==self.device),None)
+            result['spotify_device_available']=bool(selected and not selected.get('is_restricted'))
+            result['spotify_device_active']=bool(selected and selected.get('is_active'))
+            return result
+        if route=='/api/host/player-restart':
+            if not self.local_bound():raise f.Failure('Select the Spotify device linked to this playback-device connection.')
+            if self.local_active:raise f.Failure('Finish or stop the local track before restarting Soloist.')
+            if self.db.execute("SELECT 1 FROM songs WHERE state IN ('sending','accepted','queued','uncertain')").fetchone():
+                raise f.Failure('Reconcile handed-off or uncertain requests before restarting Soloist.')
+            self.enabled=False;self.idle_ready=False
+            self.reason='Soloist recovery requested. Refresh devices and start the session after it returns.'
+            self.error='';self.next_poll=0
+            return self.local.call('soloist_restart')
         if route=='/api/host/loudness-status':return self.local.call('loudness_status')
         if route=='/api/host/loudness-start':
             if self.local_config.get('normalization_enabled'):
@@ -271,6 +288,7 @@ class LocalPlayback:
         actual = (spotify.get('device') or {}).get('id')
         if actual and actual != self.device: raise f.Failure('Another Spotify device is active; local playback was not started.')
         self.commit_selection(row['id'])
+        self.record_attempt(row,'local')
         self.local_active = {'id':row['id'], 'uri':row['uri'], 'song_id':None, 'starting':True}
         self.set_meta('local_active', self.local_active)
         self.set_meta('local_last_progress', 0)
@@ -345,8 +363,7 @@ class LocalPlayback:
         self.updated = time.time()
         self.error = ''
         if status['state'] == 'play':
-            self.db.execute("UPDATE songs SET state='playing' WHERE id=?", (row['id'],))
-            self.db.commit()
+            self.confirm_attempt({'item':song,'device':{'id':self.device},'is_playing':True,'progress_ms':status.get('progress_ms',0)},row,local=True)
             self.set_meta('local_last_progress', status.get('progress_ms',0))
             self.observe_play({'item':song,'device':{'id':self.device},'is_playing':True,'progress_ms':status.get('progress_ms',0)})
             return

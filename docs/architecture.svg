@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 610" role="img" aria-labelledby="title description">
+<title id="title">UnicornTunes playback architecture</title>
+<desc id="description">Guest browsers connect to the Docker web app. The app controls Spotify through its Web API and local MPD through restricted SSH. Soloist and MPD run on a separate playback device connected to the speakers.</desc>
+<rect width="440" height="610" rx="12" fill="#000000"/>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#e52521"/></marker></defs>
+<g font-family="Arial, sans-serif" text-anchor="middle">
+<g fill="#181818" stroke="#707070" stroke-width="1.5">
+<rect x="40" y="10" width="360" height="75" rx="9"/>
+<rect x="40" y="125" width="360" height="85" rx="9"/>
+<rect x="40" y="265" width="360" height="75" rx="9"/>
+<rect x="40" y="395" width="360" height="105" rx="9"/>
+<rect x="40" y="545" width="360" height="55" rx="9"/>
+</g>
+<g fill="#f5f5f5" font-size="21" font-weight="bold">
+<text x="220" y="41">Guest browsers</text><text x="220" y="157">UnicornTunes on Docker</text>
+<text x="220" y="297">Spotify service</text><text x="220" y="425">Separate playback device</text><text x="220" y="579">Stereo / speakers</text>
+</g>
+<g fill="#c8c8c8" font-size="16">
+<text x="220" y="66">Phones and shared tablet</text><text x="220" y="184">Web interface · requests · SQLite</text>
+<text x="220" y="321">Music delivery and playback control</text>
+<text x="220" y="454">Soloist: Spotify audio</text><text x="220" y="479">MPD: uploaded local audio</text>
+</g>
+<g fill="none" stroke="#e52521" stroke-width="2.5" marker-end="url(#arrow)">
+<path d="M220 85v38"/><path d="M220 210v53"/><path d="M220 340v53"/><path d="M220 500v43"/>
+<path stroke-dasharray="5 4" d="M40 169H16V473h22"/>
+</g>
+<g fill="#b0b0b0" font-size="15" text-anchor="start"><text x="236" y="242">Web API</text><text x="236" y="373">Spotify audio</text></g>
+<text fill="#b0b0b0" font-size="14" transform="translate(11 365) rotate(-90)">Local control · SSH</text>
+</g></svg>

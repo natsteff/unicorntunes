@@ -9,3 +9,5 @@
 !mpd_agent.py
 !requirements.txt
 !local_loudness.py
+!request_history.py
+!player_health.py

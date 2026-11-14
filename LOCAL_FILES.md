@@ -140,3 +140,10 @@ Generated copies live under the reserved `__unicorntunes_normalized` directory i
 The managed copy budget is 4 GiB, with a 512 MiB free-space reserve. A file needs a known duration no longer than 30 minutes. Silence, unreadable sources, insufficient space, changed files or failed output checks are reported by track and do not alter originals. Preparation is resumable: unchanged verified copies at the selected target are reused. A failed or interrupted job must be resumed successfully before matching is enabled.
 
 Automated tests use real FFmpeg audio to verify matching across quiet/loud inputs, true-peak bounds, original-file hashes and reuse of prepared copies. Physical output matching, preparation time and resource use on a particular playback board still require deployment testing.
+
+
+## Player recovery (v0.6.0)
+
+Update the restricted agent with the v0.6.0 helper to add `player_health.py`; the helper itself does not restart anything. **Check player health** reads fixed service fields, Spotify availability and categorized journal hints. It does not expose raw logs or credentials. **Restart Soloist** is a deliberate host action that can interrupt Spotify audio; the UI asks for confirmation, leaves handoff stopped and requires a fresh session start after device recovery. Local playback and uncertain/handed-off requests must be finished or reconciled first. The restricted command can restart only `soloist.service`, not arbitrary services or shell commands.
+
+The reason for the intermittent device disappearance remains unconfirmed until diagnostic evidence is collected on the affected device. This provides a recovery path without requiring SSH for each occurrence.

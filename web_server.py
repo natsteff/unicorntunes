@@ -159,6 +159,7 @@ class App(RoomFeatures, LocalPlayback):
         if self.local_bound() and self.local.call('status').get('state') in ('play', 'pause'):
             raise f.Failure('MPD is still active. Spotify was not started; check the local player.')
         self.commit_selection(row['id'])
+        self.record_attempt(row,'direct')
         self.idle_ready = False
         try:
             # Queue insertion alone cannot start an exhausted Spotify player.
@@ -167,7 +168,7 @@ class App(RoomFeatures, LocalPlayback):
             self.db.execute("UPDATE songs SET state='uncertain',detail=? WHERE id=?", (str(error), row['id']))
             self.db.commit()
             raise
-        self.db.execute("UPDATE songs SET state='accepted',detail='Idle-player start accepted; awaiting observed playback' WHERE id=?", (row['id'],))
+        self.db.execute("UPDATE songs SET state='accepted',detail='Request start accepted; awaiting observed playback' WHERE id=?", (row['id'],))
         self.db.commit()
 
     def poll(self, force=False):
@@ -190,8 +191,7 @@ class App(RoomFeatures, LocalPlayback):
             self.observed_device = actual
             self.now = dict(track(item), playing=bool(state.get('is_playing')), progress_ms=state.get('progress_ms', 0)) if item else None
             pending = self.db.execute("SELECT * FROM songs WHERE state IN ('sending','accepted','queued','uncertain') ORDER BY id LIMIT 1").fetchone()
-            if pending and item.get('uri') == pending['uri'] and actual == self.device and state.get('is_playing') and pending['state'] != 'uncertain':
-                self.db.execute("UPDATE songs SET state='playing' WHERE id=?", (pending['id'],))
+            if pending:self.confirm_attempt(state,pending)
             self.db.execute("UPDATE songs SET state='past', detail='No longer current; completion unverified' WHERE state='playing' AND uri!=?", (item.get('uri', ''),))
             self.db.commit()
             self.observe_play(state)
@@ -199,9 +199,17 @@ class App(RoomFeatures, LocalPlayback):
             if not self.enabled:
                 return
             if actual != self.device and not (self.idle_ready and not actual):
-                raise f.Failure('Playback device changed. Handoff stopped; host must re-enable it.')
+                raise f.Failure('Selected Spotify player is unavailable. Check player health, then refresh devices and start the session.' if not actual else 'Spotify playback moved to another device. Handoff stopped; choose a player and start the session again.')
             if self.db.execute("SELECT id FROM songs WHERE state IN ('sending','accepted','queued','uncertain')").fetchone():
                 return
+            immediate=self.meta('immediate_request')
+            row=next((r for r in self.queue('') if r['state']=='waiting'),None)
+            if immediate and row and row['id']==immediate and state.get('is_playing'):
+                protected=self.db.execute("SELECT 1 FROM songs WHERE state='playing' AND uri=?",(item.get('uri'),)).fetchone()
+                if not protected:
+                    self.set_meta('immediate_request',None)
+                    self.start_idle_request(row)
+                    return
             if self.idle_ready:
                 row = next((r for r in self.queue('') if r['state'] == 'waiting'), None)
                 if row:
@@ -229,6 +237,7 @@ class App(RoomFeatures, LocalPlayback):
                 return
             self.check_rules(row)
             self.commit_selection(row['id'])
+            self.record_attempt(row,'queued')
             self.db.execute("UPDATE songs SET state='sending' WHERE id=?", (row['id'],))
             self.db.commit()
             try:
@@ -337,6 +346,7 @@ class App(RoomFeatures, LocalPlayback):
                         raise f.Failure('Spotify state changed during startup. Start again to begin the local request safely.')
                     self.check_rules(seed)
                     self.commit_selection(seed['id'])
+                    self.record_attempt(seed,'direct',device)
                     self.db.execute("UPDATE songs SET state='sending' WHERE id=?", (seed['id'],))
                     self.db.commit()
                     try:
@@ -366,8 +376,7 @@ class App(RoomFeatures, LocalPlayback):
             self.now = dict(track(observed.get('item') or {}), playing=True, progress_ms=observed.get('progress_ms', 0))
             self.updated = time.time()
             if seed and (observed.get('item') or {}).get('uri') == seed['uri']:
-                self.db.execute("UPDATE songs SET state='playing' WHERE id=?", (seed['id'],))
-                self.db.commit()
+                self.confirm_attempt(observed,dict(seed,state='accepted'))
             self.observe_play(observed)
         except (f.Failure, OSError) as error:
             self.reason = 'Session start needs attention: ' + (str(error) if isinstance(error, f.Failure) else 'Could not save configuration.')
@@ -407,6 +416,7 @@ class App(RoomFeatures, LocalPlayback):
             if chosen and not pending:
                 self.check_rules(chosen)
                 self.commit_selection(chosen['id'])
+                self.record_attempt(chosen,'direct')
                 self.db.execute("UPDATE songs SET state='sending' WHERE id=?", (chosen['id'],))
                 self.db.commit()
                 mutated = True
@@ -427,7 +437,7 @@ class App(RoomFeatures, LocalPlayback):
                 raise f.Failure('Next track could not be confirmed. Handoff stopped; reconcile before trying again.')
             self.db.execute("UPDATE songs SET state='past',detail='Host skipped; full playback not claimed' WHERE state='playing'")
             if chosen:
-                self.db.execute("UPDATE songs SET state='playing',detail='Host skip observed selected request playing' WHERE id=?", (chosen['id'],))
+                self.confirm_attempt(observed,dict(chosen,state='accepted'))
             self.db.commit()
             self.now = dict(track(observed.get('item') or {}), playing=True, progress_ms=observed.get('progress_ms', 0))
             self.updated = time.time()

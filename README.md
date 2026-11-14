@@ -10,15 +10,11 @@ Guests open a URL or scan a QR code to search music, browse host-selected playli
 
 ## How it works
 
-```mermaid
-flowchart LR
-    Guests[Phones / tablet browser] --> App[UnicornTunes Docker web app + SQLite]
-    App --> Spotify[Spotify Web API / Spotify service]
-    Spotify --> Player[Separate playback device running Soloist]
-    Player --> Stereo[Stereo / speakers]
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="Browsers connect to the Docker web app; Spotify streams to Soloist and restricted SSH controls MPD on the separate playback device, which outputs to the speakers." width="440">
+</p>
 
-UnicornTunes manages requests, fairness, votes, guest identity, curation and history. Spotify's service delivers audio to Soloist. The browser and Docker web app do not decode or output the music. Playback control currently uses Spotify's Web API; Soloist's optional local WebSocket API is not required or exposed to guests.
+UnicornTunes manages requests, fairness, votes, guest identity, curation and history. Spotify's service delivers audio to Soloist. The browser and Docker web app do not output the music; the optional web-side artwork processor only creates cover thumbnails. Playback control currently uses Spotify's Web API; Soloist's optional local WebSocket API is not required or exposed to guests.
 
 ## Requirements
 
@@ -139,3 +135,12 @@ python3 -m unittest discover -s tests -v
 The source server binds to `http://127.0.0.1:8863` by default; `/host` is the host desk. It needs configured Spotify credentials for real catalog access. Optional CLI setup/login remains available through `python3 foxtunes.py setup` and `python3 foxtunes.py login`; deployment-side sign-in instructions are in [DEPLOY.md](DEPLOY.md).
 
 Automated tests cover authentication, persistence/migrations, queue fairness, playback failure handling, guest attribution, favorites, stats, host configuration and playlist sharing. Live account permissions, deployed-device behavior and audible playback still require verification on the installation.
+
+
+## Upgrade notes for v0.6.0
+
+This upgrade fixes requested-only play history and performs a **one-time played-history and likes reset after a private SQLite backup**. It preserves requests, votes, guest profiles, favorites, enabled playlists, configuration and playback-copy files. History backups live in the persistent data volume as `web-history-backup-*.sqlite3`. Earlier handed-off requests without verifiable dispatch ownership are held for host reconciliation. Future history resets are available through the authenticated host configuration and also save a backup first.
+
+The first request over background music starts immediately in a running session. A single **Like this song** button replaces the three reactions and remains separate from queue upvotes. Host playback-device diagnostics and explicit Soloist recovery require the v0.6.0 restricted-agent update; see [the local player guide](LOCAL_FILES.md#player-recovery-v060).
+
+For source switching, volume comparison, reboot and multi-phone checks, follow the [deployment acceptance checklist](DEPLOYMENT_CHECKLIST.md). The original personal Spotify account remains in use until the guest-account migration is deliberately performed after validation.

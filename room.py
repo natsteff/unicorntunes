@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import foxtunes as f
+from request_history import RequestHistory
 
 SHY = '<Shy guy - name not provided>'
 COPY = {
@@ -28,7 +29,7 @@ DEFAULTS = {'copy': COPY, 'hide_eyebrow': False, 'fair_queue': True, 'theme': ''
             'repeat_minutes': 0, 'locations': {}, 'timezone': 'America/Chicago'}
 
 
-class RoomFeatures:
+class RoomFeatures(RequestHistory):
     def room_init(self):
         self.db.executescript('''
           CREATE TABLE IF NOT EXISTS guests(id TEXT PRIMARY KEY,name TEXT NOT NULL,named INTEGER DEFAULT 0);
@@ -65,6 +66,7 @@ class RoomFeatures:
             self.db.execute('ALTER TABLE votes ADD COLUMN created REAL DEFAULT 0')
         self.db.execute("INSERT OR IGNORE INTO votes(song,guest,voter_name) SELECT id,guest,requested_by FROM songs")
         self.db.commit()
+        self.history_init()
         path = self.data / 'room.json'
         saved = f.load(path) if path.exists() else {}
         self.room = copy.deepcopy(DEFAULTS)
@@ -177,7 +179,7 @@ class RoomFeatures:
         if any(a.casefold() in {x.casefold() for x in self.room['blocked_artists']} for a in artists):
             raise f.Failure('This artist is blocked by the host.')
         if self.room['repeat_minutes']:
-            if self.db.execute('SELECT 1 FROM plays WHERE uri=? AND started>?', (song['uri'], time.time() - self.room['repeat_minutes'] * 60)).fetchone():
+            if self.db.execute('SELECT 1 FROM requested_plays WHERE uri=? AND started>?', (song['uri'], time.time() - self.room['repeat_minutes'] * 60)).fetchone():
                 raise f.Failure('This song was played recently. Try another favorite.')
 
     def submit(self, sid, uri):
@@ -202,6 +204,7 @@ class RoomFeatures:
         guest = self.guest_id(sid)
         if self.db.execute("SELECT count(*) FROM songs WHERE guest=? AND state='waiting'", (guest,)).fetchone()[0] >= 3:
             raise f.Failure('You can have up to three waiting requests.')
+        was_empty = not self.db.execute("SELECT 1 FROM songs WHERE state IN ('waiting','sending','accepted','queued','uncertain','playing')").fetchone()
         gathering = self.meta('gathering')
         first = not self.db.execute("SELECT 1 FROM songs WHERE guest=? AND gathering=? AND state!='removed'", (guest, gathering)).fetchone()
         name = self.guest_name(guest)
@@ -210,6 +213,9 @@ class RoomFeatures:
                                   (guest, uri, json.dumps(song), time.time(), name, gathering, first))
             self.db.execute('INSERT INTO votes(song,guest,voter_name,created) VALUES(?,?,?,?)', (row.lastrowid, guest, name, time.time()))
         self.reserve_next()
+        if was_empty:
+            self.set_meta('immediate_request',row.lastrowid)
+            self.next_poll=0
 
     def vote(self, sid, song):
         row = self.db.execute('SELECT state FROM songs WHERE id=?', (song,)).fetchone()
@@ -220,49 +226,7 @@ class RoomFeatures:
         self.db.commit()
 
     def observe_play(self, state, skipped=False):
-        from web_server import track
-        now = time.time()
-        item = state.get('item') or {}
-        uri = item.get('uri')
-        if uri and not uri.startswith(('spotify:track:', 'local:')):
-            uri = None
-        progress = state.get('progress_ms') or 0
-        device = (state.get('device') or {}).get('id')
-        active = self.db.execute("SELECT * FROM plays WHERE outcome='observing' ORDER BY id DESC LIMIT 1").fetchone()
-        # Ignore other playback locations; close an existing observation without claiming completion.
-        if self.device and device != self.device:
-            if active:
-                self.db.execute("UPDATE plays SET outcome='unknown' WHERE id=?", (active['id'],))
-                self.db.commit()
-            return
-        restarted = active and active['uri'] == uri and progress + 10000 < active['last_progress']
-        if active and (active['uri'] != uri or restarted):
-            duration = json.loads(active['metadata']).get('duration_ms', 0)
-            near_end = duration > 0 and active['last_progress'] >= duration - 5000
-            outcome = 'skipped' if skipped else ('ended-near-finish' if near_end and now - active['last_seen'] < 15 else 'unknown')
-            self.db.execute('UPDATE plays SET outcome=? WHERE id=?', (outcome, active['id']))
-            if restarted and active['song']:
-                self.db.execute("UPDATE songs SET state='past' WHERE id=? AND state='playing'", (active['song'],))
-            active = None
-        if uri and state.get('is_playing'):
-            if not active:
-                request = self.db.execute("SELECT * FROM songs WHERE uri=? AND state IN ('playing','accepted','queued') ORDER BY id LIMIT 1", (uri,)).fetchone()
-                self.db.execute('INSERT INTO plays(song,uri,metadata,requester,guest,gathering,started,last_seen,last_progress) VALUES(?,?,?,?,?,?,?,?,?)',
-                                (request['id'] if request else None, uri, json.dumps(track(item)), request['requested_by'] if request else '',
-                                 request['guest'] if request else '', self.meta('gathering'), now, now, progress))
-            else:
-                # Count only plausible progress observed between fresh polls; a seek cannot earn a play.
-                delta = max(0, progress - active['last_progress']) / 1000
-                elapsed = now - active['last_seen']
-                listened = active['listened'] + (min(delta, elapsed) if elapsed < 30 and delta <= elapsed + 3 else 0)
-                duration = item.get('duration_ms') or 0
-                threshold = min(30, duration / 2000) if duration else 30
-                self.db.execute('UPDATE plays SET listened=?,qualified=?,last_progress=?,last_seen=? WHERE id=?',
-                                (listened, int(listened >= threshold), progress, now, active['id']))
-        elif active:
-            self.db.execute('UPDATE plays SET last_seen=?,last_progress=? WHERE id=?', (now, progress, active['id']))
-        self.db.commit()
-        self.reserve_next()
+        return self.observe_requested_play(state,skipped)
 
     def refresh_upcoming(self):
         if time.monotonic() < self.upcoming_due:
@@ -354,7 +318,7 @@ class RoomFeatures:
 
     def favorites(self):
         return [dict(json.loads(r['metadata']), plays=r['plays']) for r in self.db.execute('''
-          SELECT f.*, (SELECT count(*) FROM plays p WHERE p.uri=f.uri AND p.qualified=1) AS plays
+          SELECT f.*, (SELECT count(*) FROM requested_plays p WHERE p.uri=f.uri AND p.qualified=1) AS plays
           FROM favorites f ORDER BY plays DESC, f.created,f.uri''')]
 
     def stats(self, period, sid):
@@ -365,14 +329,14 @@ class RoomFeatures:
         if period not in cutoffs:
             raise f.Failure('Unknown stats period.')
         since = cutoffs[period]
-        rows = self.db.execute('SELECT * FROM plays WHERE started>=? ORDER BY started DESC LIMIT 100', (since,)).fetchall()
+        rows = self.db.execute('SELECT * FROM requested_plays WHERE started>=? ORDER BY started DESC LIMIT 100', (since,)).fetchall()
         recent = [dict(json.loads(r['metadata']), requested_by=r['requester'] or 'Background music', started=r['started'],
                        outcome=r['outcome'], qualified=bool(r['qualified'])) for r in rows]
         top = [dict(json.loads(r['metadata']), plays=r['plays']) for r in self.db.execute('''
-          SELECT uri,metadata,count(*) AS plays FROM plays WHERE started>=? AND qualified=1
+          SELECT uri,metadata,count(*) AS plays FROM requested_plays WHERE started>=? AND qualified=1
           GROUP BY uri ORDER BY plays DESC,uri LIMIT 40''', (since,))]
         users = {r['requester']: {'name':r['requester'], 'plays':r['plays'], 'votes':0} for r in self.db.execute('''
-          SELECT requester,count(*) AS plays FROM plays WHERE started>=? AND qualified=1 AND requester!='' AND requester!=?
+          SELECT requester,count(*) AS plays FROM requested_plays WHERE started>=? AND qualified=1 AND requester!='' AND requester!=?
           GROUP BY requester''', (since, SHY))}
         favorites = [dict(json.loads(r['metadata']), votes=r['votes']) for r in self.db.execute('''
           SELECT s.uri,s.metadata,count(*) AS votes FROM songs s JOIN votes v ON v.song=s.id
@@ -387,36 +351,36 @@ class RoomFeatures:
         discovery = [dict(json.loads(r['metadata']), requested_by=r['requested_by'] or SHY, votes=r['votes']) for r in self.db.execute('''
           SELECT s.*,count(*) AS votes FROM songs s JOIN votes v ON v.song=s.id
           WHERE v.created>=? AND v.guest!=s.guest
-            AND EXISTS(SELECT 1 FROM plays p WHERE p.song=s.id AND p.qualified=1)
-            AND NOT EXISTS(SELECT 1 FROM plays p WHERE p.uri=s.uri AND p.started<s.created AND p.qualified=1)
+            AND EXISTS(SELECT 1 FROM requested_plays p WHERE p.song=s.id AND p.qualified=1)
+            AND NOT EXISTS(SELECT 1 FROM requested_plays p WHERE p.uri=s.uri AND p.started<s.created AND p.qualified=1)
           GROUP BY s.id ORDER BY votes DESC,s.created LIMIT 1''', (since,))]
         mine = [dict(json.loads(r['metadata']), state=r['state'], requested=r['created'], votes=r['votes']) for r in self.db.execute('''
           SELECT s.*,count(v.guest) AS votes FROM songs s LEFT JOIN votes v ON v.song=s.id
           WHERE s.guest=? AND s.created>=? GROUP BY s.id ORDER BY s.created DESC LIMIT 100''', (self.guest_id(sid), since))]
-        reactions = self.db.execute('SELECT count(*) FROM reactions r JOIN plays p ON p.id=r.play WHERE p.started>=?', (since,)).fetchone()[0]
+        reactions = self.db.execute('SELECT count(*) FROM reactions r JOIN requested_plays p ON p.id=r.play WHERE p.started>=?', (since,)).fetchone()[0]
         return {'recent': recent[:100], 'top': top, 'votes': favorites, 'crowd': crowd, 'discovery': discovery,
                 'users': sorted(users.values(), key=lambda x: (-x['plays'], -x['votes'], x['name'])),
-                'mine': mine, 'recap': {'plays': self.db.execute('SELECT count(*) FROM plays WHERE started>=? AND qualified=1', (since,)).fetchone()[0],
+                'mine': mine, 'recap': {'plays': self.db.execute('SELECT count(*) FROM requested_plays WHERE started>=? AND qualified=1', (since,)).fetchone()[0],
                                       'guests': self.db.execute('SELECT count(DISTINCT guest) FROM songs WHERE created>=?', (since,)).fetchone()[0],
                                       'reactions': reactions}, 'truncated': False}
 
     def room_state(self, sid):
         guest = self.guest_id(sid)
         profile = self.db.execute('SELECT * FROM guests WHERE id=?', (guest,)).fetchone()
-        current = self.db.execute("SELECT id FROM plays WHERE outcome='observing' ORDER BY id DESC LIMIT 1").fetchone()
+        current = self.db.execute("SELECT id FROM requested_plays WHERE outcome='observing' ORDER BY id DESC LIMIT 1").fetchone()
         reactions = []
         if current:
             reactions = [dict(r) for r in self.db.execute('SELECT reaction,count(*) AS count FROM reactions WHERE play=? GROUP BY reaction', (current['id'],))]
         now = dict(self.now) if self.now else None
         if now:
-            owner = self.db.execute("SELECT requested_by FROM songs WHERE uri=? AND state='playing' ORDER BY id DESC LIMIT 1", (now['uri'],)).fetchone()
+            owner = self.db.execute("SELECT s.requested_by FROM songs s JOIN request_attempts a ON a.song=s.id WHERE s.uri=? AND s.state='playing' AND a.confirmed=1 ORDER BY s.id DESC LIMIT 1", (now['uri'],)).fetchone()
             if owner:
                 now['requested_by'] = owner[0] or SHY
         return {'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
                 'local_player': dict(self.local_config, count=self.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0]) if self.sessions.get(sid, {}).get('host') else None,
                 'room': self.room, 'version': os.environ.get('UNICORNTUNES_VERSION', '0.3.0-dev'),
                 'spotify_upcoming': self.spotify_upcoming, 'play_id': current['id'] if current else None,
-                'reactions': reactions, 'background': bool(self.now and not self.db.execute("SELECT 1 FROM songs WHERE state='playing'").fetchone()),
+                'reactions': reactions, 'liked': bool(current and self.db.execute('SELECT 1 FROM reactions WHERE play=? AND guest=?',(current['id'],guest)).fetchone()), 'history_cleanup': self.meta('history_cleanup',{}) if self.sessions.get(sid,{}).get('host') else None, 'background': bool(self.now and not self.db.execute("SELECT 1 FROM songs WHERE state='playing'").fetchone()),
                 'gathering': self.meta('gathering'), 'presets': PRESETS if self.sessions.get(sid, {}).get('host') else {}}
 
     def room_action(self, sid, route, body):
@@ -430,12 +394,16 @@ class RoomFeatures:
             token = self.attach_guest(sid, '')
             return {'ok': True, '_guest_token': token}
         elif route == '/api/react':
-            play = self.db.execute("SELECT id FROM plays WHERE outcome='observing' ORDER BY id DESC LIMIT 1").fetchone()
+            play = self.db.execute("SELECT id FROM requested_plays WHERE outcome='observing' ORDER BY id DESC LIMIT 1").fetchone()
             reaction = body.get('reaction')
-            if not play or reaction not in ('love', 'fire', 'great-pick'):
+            if play and 'play' in body and body['play']!=play['id']:
+                raise f.Failure('The song changed. Refresh before liking the next one.')
+            if not play or reaction not in ('like','love','fire','great-pick'):
                 raise f.Failure('Choose a reaction to the current song.')
-            self.db.execute('INSERT OR REPLACE INTO reactions VALUES(?,?,?)', (play['id'], guest, reaction))
+            self.db.execute('INSERT OR REPLACE INTO reactions VALUES(?,?,?)', (play['id'], guest, 'like'))
             self.db.commit()
+        elif route == '/api/host/history-reset':
+            return self.reset_play_history()
         elif route == '/api/host/playlist':
             playlist_id = str(body.get('id', ''))
             if not f.re.fullmatch(r'[A-Za-z0-9]{22}', playlist_id):

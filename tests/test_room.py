@@ -31,6 +31,17 @@ class RoomTests(unittest.TestCase):
         self.app.db.close()
         self.temp.cleanup()
 
+    def owned_state(self, uri=A):
+        self.app.device='speaker'
+        self.app.submit(self.sids[1],uri)
+        row=next(r for r in self.app.queue('') if r['uri']==uri)
+        self.app.record_attempt(row,'direct')
+        self.app.db.execute("UPDATE songs SET state='accepted' WHERE id=?",(row['id'],));self.app.db.commit()
+        state=copy.deepcopy(self.api.state)
+        state['item']=dict(self.app.catalog[uri],artists=[{'name':'Artist'}]);state['progress_ms']=0
+        self.app.confirm_attempt(state,dict(row,state='accepted'))
+        return state
+
     def play_selection(self):
         chosen = next(x for x in self.app.queue('') if x['state']=='waiting')
         self.app.commit_selection(chosen['id'])
@@ -158,8 +169,7 @@ class RoomTests(unittest.TestCase):
 
     def test_play_counts_require_observed_progress_and_ignore_seeks(self):
         self.app.device = 'speaker'
-        state = copy.deepcopy(self.api.state)
-        state['item'] = dict(self.app.catalog[A], artists=[{'name':'Artist'}])
+        state = self.owned_state(A)
         state['progress_ms'] = 0
         with patch('room.time.time', return_value=1000): self.app.observe_play(state)
         state['progress_ms'] = 90000
@@ -168,7 +178,7 @@ class RoomTests(unittest.TestCase):
         state['progress_ms'] = 95000
         with patch('room.time.time', return_value=1010): self.app.observe_play(state)
         self.assertEqual(self.app.db.execute('SELECT listened FROM plays').fetchone()[0], 5)
-        state['item'] = dict(self.app.catalog[B], artists=[{'name':'Artist'}]);state['progress_ms'] = 0
+        state = self.owned_state(B)
         with patch('room.time.time', return_value=1015): self.app.observe_play(state, skipped=True)
         self.assertEqual(self.app.db.execute('SELECT outcome FROM plays WHERE id=1').fetchone()[0], 'skipped')
         for i in range(1, 7):
@@ -181,7 +191,7 @@ class RoomTests(unittest.TestCase):
 
     def test_observation_gap_and_other_device_do_not_count(self):
         self.app.device = 'speaker'
-        state = copy.deepcopy(self.api.state);state['progress_ms']=0
+        state = self.owned_state(A)
         with patch('room.time.time', return_value=100): self.app.observe_play(state)
         state['progress_ms']=60000
         with patch('room.time.time', return_value=160): self.app.observe_play(state)
@@ -258,8 +268,9 @@ class RoomTests(unittest.TestCase):
 
     def test_counted_favorites_sort_and_repeat_cooldown(self):
         for uri in (A,B):self.app.action(self.host,'/api/host/favorite',{'uri':uri})
-        now=time.time()
-        self.app.db.execute("INSERT INTO plays(uri,metadata,gathering,started,last_seen,qualified,outcome) VALUES(?,?,?,?,?,1,'unknown')",(B,json.dumps(self.app.catalog[B]),1,now,now))
+        state=self.owned_state(B)
+        self.app.observe_play(state)
+        self.app.db.execute("UPDATE plays SET qualified=1,outcome='unknown' WHERE uri=?",(B,))
         self.app.db.commit()
         self.assertEqual(self.app.favorites()[0]['uri'],B)
         self.assertEqual(self.app.favorites()[0]['plays'],1)
@@ -267,7 +278,7 @@ class RoomTests(unittest.TestCase):
         with self.assertRaises(f.Failure):self.app.submit(self.sids[1],B)
 
     def test_reaction_is_one_per_guest_and_active_play_only(self):
-        self.app.observe_play(self.api.state)
+        self.app.observe_play(self.owned_state(A))
         self.app.room_action(self.host,'/api/react',{'reaction':'love'})
         self.app.room_action(self.host,'/api/react',{'reaction':'fire'})
         self.assertEqual(self.app.db.execute('SELECT count(*) FROM reactions').fetchone()[0],1)

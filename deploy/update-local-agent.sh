@@ -8,10 +8,14 @@ if [ ! -f "$agent_dir/mpd-agent.py" ]; then
 fi
 agent_tmp="$(mktemp "$agent_dir/.mpd-agent.XXXXXX")"
 loudness_tmp="$(mktemp "$agent_dir/.loudness.XXXXXX")"
-trap 'rm -f "$agent_tmp" "$loudness_tmp"' EXIT
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.1/mpd_agent.py -o "$agent_tmp"
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.1/local_loudness.py -o "$loudness_tmp"
-python3 -c 'import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]' "$agent_tmp" "$loudness_tmp"
+health_tmp="$(mktemp "$agent_dir/.health.XXXXXX")"
+trap 'rm -f "$agent_tmp" "$loudness_tmp" "$health_tmp"' EXIT
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.6.0/mpd_agent.py -o "$agent_tmp"
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.6.0/local_loudness.py -o "$loudness_tmp"
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.6.0/player_health.py -o "$health_tmp"
+python3 -c 'import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]' "$agent_tmp" "$loudness_tmp" "$health_tmp"
+chmod 600 "$health_tmp"
+mv "$health_tmp" "$agent_dir/player_health.py"
 chmod 600 "$loudness_tmp"
 mv "$loudness_tmp" "$agent_dir/local_loudness.py"
 chmod 600 "$agent_tmp"

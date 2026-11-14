@@ -98,7 +98,10 @@ def image_type(raw):
 
 def execute(mpd,request):
     action=request.get('action')
-    if action not in ('library','status','play','pause','stop','scan','picture','volume','loudness_status','loudness_start','loudness_cancel','loudness_check'):raise ValueError('Unknown action')
+    if action not in ('library','status','play','pause','stop','scan','picture','volume','loudness_status','loudness_start','loudness_cancel','loudness_check','soloist_status','soloist_restart'):raise ValueError('Unknown action')
+    if action in ('soloist_status','soloist_restart'):
+        import player_health
+        return player_health.soloist_status() if action=='soloist_status' else player_health.restart_soloist()
     if action.startswith('loudness_'):
         import local_loudness as loudness
         if action=='loudness_cancel':return loudness.cancel()
@@ -115,7 +118,7 @@ def execute(mpd,request):
         status=dict(mpd.command('status'));current=dict(mpd.command('currentsong'))
         normalized=re.fullmatch(r'__unicorntunes_normalized/([a-f0-9]{64})\.flac',current.get('file',''))
         uri=('local:'+normalized[1]) if normalized else ('local:'+hashlib.sha256(current['file'].encode()).hexdigest() if current.get('file') else None)
-        return {'agent_version':4,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
+        return {'agent_version':5,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
                 'progress_ms':round(float(status.get('elapsed',0))*1000),
                 'duration_ms':round(float(status.get('duration',0))*1000),'volume':status.get('volume'),
                 'error':status.get('error',''),'normalized':bool(normalized),'updating':bool(status.get('updating_db'))}

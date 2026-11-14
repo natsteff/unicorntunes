@@ -162,6 +162,9 @@ class MixedPlaybackTests(unittest.TestCase):
         self.assertEqual(self.mpd.state['state'],'stop');self.assertTrue(self.spotify.state['is_playing'])
 
     def test_next_local_waits_until_spotify_end(self):
+        current=self.request(SPOTIFY)
+        self.app.record_attempt(current,'direct')
+        self.app.confirm_attempt(dict(self.spotify.state,progress_ms=0),dict(current,state='accepted'))
         self.request();self.spotify.state['progress_ms']=30000
         self.app.poll(force=True);self.assertNotIn(('mpd','play'),self.events)
         self.spotify.state['progress_ms']=59500;self.app.poll(force=True)

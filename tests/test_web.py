@@ -83,6 +83,7 @@ class WebTests(unittest.TestCase):
         for sid, uri in zip(self.sessions, (A, B, C)):
             self.app.submit(sid, uri)
         self.app.vote(self.sessions[1], 3)
+        self.app.set_meta('immediate_request',None)  # This case exercises near-end queue insertion.
         self.app.poll(True)
         self.assertFalse(any(c[1] != 'GET' for c in self.api.calls))
         self.app.device, self.app.enabled = 'speaker', True
@@ -108,6 +109,7 @@ class WebTests(unittest.TestCase):
 
     def test_paused_and_not_near_end_do_not_dispatch(self):
         self.app.submit(self.sessions[0], A)
+        self.app.set_meta('immediate_request',None)  # Exercise an existing waiting queue, not first background arrival.
         self.app.enabled, self.app.device = True, 'speaker'
         self.api.state['progress_ms'] = 1000
         self.app.poll(True)
@@ -304,6 +306,7 @@ class SessionStartTests(unittest.TestCase):
             result=original(path,method,payload,params)
             if path=='/me/player/play':
                 self.api.state['item']={'uri':payload['uris'][0],'duration_ms':100000}
+                self.api.state['progress_ms']=0
                 self.api.state['is_playing']=True
             return result
         with patch.object(self.api,'call',side_effect=call):
@@ -345,6 +348,7 @@ class SkipRequestTests(unittest.TestCase):
             result=original(path,method,payload,params)
             if path=='/me/player/play':
                 self.api.state['item']={'uri':payload['uris'][0],'duration_ms':100000}
+                self.api.state['progress_ms']=0
             elif path=='/me/player/next':
                 self.api.state['item']={'uri':getattr(self,'next_uri',C),'duration_ms':100000}
             return result

@@ -29,6 +29,8 @@ def main():
     loudness=source.parent/'local_loudness.py'
     shutil.copyfile(loudness,agent.parent/'local_loudness.py')
     (agent.parent/'local_loudness.py').chmod(0o600)
+    shutil.copyfile(source.parent/'player_health.py',agent.parent/'player_health.py')
+    (agent.parent/'player_health.py').chmod(0o600)
     ssh = home / '.ssh'
     ssh.mkdir(mode=0o700, exist_ok=True)
     ssh.chmod(0o700)

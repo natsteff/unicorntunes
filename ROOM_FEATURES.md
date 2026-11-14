@@ -6,7 +6,7 @@ Phones remember a private guest identity for a year using an HttpOnly, SameSite 
 
 The guest page asks for a name once. Skipping uses the literal `<Shy guy - name not provided>`. Requests and additional votes retain the name used when submitted. Changing your name affects future attribution. Your requests are highlighted and labelled in the shared queue. The requester contributes the initial vote and cannot vote twice. Existing requests receive their initial vote during migration; legacy names remain unknown.
 
-`/display` is a touch-oriented view for the tablet/Pine64 enclosure. It keeps a join QR visible and asks for a fresh guest name before each request/reaction so one visitor does not silently inherit another visitor's identity. For recurring personal identity and voting, guests should scan the QR and use their own phones. Switching guests does not sign a host out: sign out before leaving a shared tablet unattended.
+`/display` is a touch-oriented shared tablet view. It keeps a join QR visible and asks for a fresh guest name before each request/reaction so one visitor does not silently inherit another visitor's identity. For recurring personal identity and voting, guests should scan the QR and use their own phones. Switching guests does not sign a host out: sign out before leaving a shared tablet unattended.
 
 ## Fair queue
 
@@ -37,7 +37,7 @@ History starts when this version is installed; older listening is not invented. 
 
 Room stats includes recent observations, Top 40 counted plays, additional upvotes, distinct-supporter crowd favorites, users ranked by plays or additional votes received, personal request history, a recap, weekly most-supported tracks, a monthly anthem, and a discovery spotlight. The spotlight is the played request with most additional votes and no earlier counted play in recorded history. Identical provided names are combined for user leaderboards; unnamed guests remain in history but are excluded from that leaderboard.
 
-Tonight means the current host-started gathering, week means the last seven days, month means the current calendar month in the host's timezone, and All time covers retained data. Aggregate rankings cover the whole period; recent observations and personal history each show up to 100 entries. Recent history can be downloaded as text, and the recap copied for sharing. Reactions allow one current choice per guest per observed track, independently of queue votes. A phone receives an in-page notice when its request becomes the protected next request.
+Tonight means the current host-started gathering, week means the last seven days, month means the current calendar month in the host's timezone, and All time covers retained data. Aggregate rankings cover the whole period; recent observations and personal history each show up to 100 entries. Recent history can be downloaded as text, and the recap copied for sharing. The current Like button allows one like per guest per observed requested play, independently of queue votes. A phone receives an in-page notice when its request becomes the protected next request.
 
 ## Playback health and Spotify upcoming
 
@@ -62,3 +62,20 @@ Existing Spotify authorization must be renewed for playlist-read-private and pla
 An enabled session remains ready after an observed track end. A fresh selected-device observation near the end followed by an elapsed, exhausted/empty playback state arms idle recovery. When a waiting request arrives, the worker starts the protected next request directly on the selected device; inserting it into Spotify's queue alone cannot restart an exhausted player. Acceptance still waits for observed playback, and uncertain starts are held without automatic retries.
 
 Host Pause/Stop and mid-track pauses do not trigger recovery. Other active devices are not taken over; server restarts still require host Start. A stale observation is not treated as proof of exhaustion. Spotify polling cannot perfectly distinguish a manual stop exactly at the end from a natural ending. No automatic background playlist is selected when there are no requests.
+
+
+## Requested-only history, first requests and likes (0.6.0)
+
+Played history now requires a recorded dispatch attempt and observed playback on its selected device. A waiting request, a matching Spotify URI, background playback or an uncertain mutation is not sufficient. Queued Spotify starts must show a new/fresh playback transition; local starts additionally retain the owned MPD queue item ID. A repeated background playback of the same song is not attributed to its earlier request. Restarts do not create a second play for the same owned request or award downtime credit.
+
+On the first upgrade to this version, the application backs up the SQLite database to a private `web-history-backup-*.sqlite3` file, then resets played history and likes. Requests, votes, profiles, House Favorites, shared playlists, queue fairness and configuration remain intact. Old handed-off requests that lack dispatch evidence are held for host reconciliation. Played rankings, recent history, play counts, repeat checks, recap play totals and favorite play sorting use only eligible requested plays. Request/vote statistics continue to use preserved user requests and votes. The host also has a backed-up history reset control for future use.
+
+During a running session, the first request arriving to an empty request queue interrupts background music immediately on the next worker pass (normally within one second). It still respects the protected next request, host rules, the selected device and source-pause verification. It does not interrupt an actual requested track, an unresolved handoff, a host-stopped session or another active playback device.
+
+The three positive reactions are replaced with **♥ Like this song** and its count. Each guest can like a requested play once; likes do not change queue order or add House Favorites. Legacy reaction API choices map to the same canonical like. Shared-tablet visitors can switch identity as before.
+
+## Playback-device diagnosis and recovery (0.6.0)
+
+With the optional restricted player connection configured, hosts can inspect Soloist service state, restart count, Spotify availability and categorized recent log hints. Raw journal lines, command lines, API keys and tokens are not returned. A running service and zero matching log messages do not establish a healthy Spotify connection or a root cause.
+
+**Restart Soloist** is an explicit, confirmed host action against the fixed `soloist.service` user unit. It disables automatic handoff and refuses while a local track or unresolved handoff is present. It does not retry requests or automatically resume the session. After the player returns, refresh devices and start the session deliberately. There is no blind restart loop or takeover of another active device.
