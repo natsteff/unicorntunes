@@ -624,9 +624,9 @@ def handler(app):
                             app.oauth_finish(session, query)
                             self.respond(200, b'<!doctype html><title>UnicornTunes connected</title><p>Spotify connected. <a href="/host">Return to host desk</a></p>', 'text/html')
                             return
-                        if parsed.path in ('/', '/host', '/app.js', '/style.css', '/favicon.png', '/foxtunes-logo.png', '/vendor/qrcode.min.js', '/room.js', '/room.css', '/display', '/playlists.js'):
-                            name = {'/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js'}[parsed.path]
-                            content = {'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript'}[name]
+                        if parsed.path in ('/', '/host', '/app.js', '/style.css', '/site.webmanifest', '/favicon.png', '/foxtunes-logo.png', '/vendor/qrcode.min.js', '/room.js', '/room.css', '/display', '/playlists.js'):
+                            name = {'/site.webmanifest': 'site.webmanifest', '/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js'}[parsed.path]
+                            content = {'site.webmanifest': 'application/manifest+json', 'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript'}[name]
                             self.respond(200, (Path(__file__).parent / 'web' / name).read_bytes(), content, sid)
                             return
                         if parsed.path == '/api/host/playlists':
