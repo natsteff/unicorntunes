@@ -22,6 +22,12 @@ class LoudnessTests(unittest.TestCase):
         self.state=Path(self.temp.name)/'state';self.state.mkdir()
     def tearDown(self):self.temp.cleanup()
 
+    def test_ffmpeg_measurement_allows_trailing_log_messages(self):
+        report={'input_i':'-14.0','input_tp':'-1.0','input_lra':'3','input_thresh':'-24','target_offset':'0'}
+        result=Mock(returncode=0,stderr='FFmpeg log\n'+json.dumps(report)+'\n[out#0] Final muxer statistics\n')
+        with patch('local_loudness.subprocess.run',return_value=result):
+            self.assertEqual(loud.run_ffmpeg([],self.state),report)
+
     def test_targets_and_source_paths_are_bounded(self):
         for value in [-21,-10,float('nan'),True,'-14']:
             with self.assertRaises(ValueError):loud.validate_target(value)

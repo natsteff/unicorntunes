@@ -125,7 +125,7 @@ def run_ffmpeg(args, state):
     if (state/'cancel').exists():raise Cancelled()
     if result.returncode:raise ValueError('FFmpeg could not process this audio file.')
     try:
-        report=json.loads(result.stderr[result.stderr.rfind('{'):])
+        report,_=json.JSONDecoder().raw_decode(result.stderr[result.stderr.rfind('{'):])
         for key in ('input_i','input_tp','input_lra','input_thresh','target_offset'):
             if not math.isfinite(float(report[key])):raise ValueError()
         return report
@@ -145,11 +145,12 @@ def prepare(song, target, root, state):
     if not 0<duration<=1800:raise ValueError('Preparation requires a known duration of at most 30 minutes.')
     output=output_path(root,song['uri']);output.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     if output.parent.is_symlink():raise ValueError('The playback-copy directory must not be a symlink.')
+    temporary=output.with_name('.'+output.stem+'.part.flac')
+    temporary.unlink(missing_ok=True)
     estimated=int(duration*48000*3*2)+1024**2
     used=sum(p.stat().st_size for p in output.parent.glob('*.flac'))
     if used+estimated>CACHE_LIMIT or shutil.disk_usage(root).free<estimated+FREE_RESERVE:
         raise ValueError('Not enough cache space: 4 GiB copy budget and 512 MiB free reserve required.')
-    temporary=output.with_name('.'+output.stem+'.part.flac')
     try:
         first=measure(source,target,state)
         fields=':'.join(f'{key}={first[value]}' for key,value in
@@ -157,7 +158,7 @@ def prepare(song, target, root, state):
                          ('measured_thresh','input_thresh'),('offset','target_offset')])
         report=run_ffmpeg(['-y','-i',str(source),'-map','0:a:0','-vn','-sn','-dn','-map_metadata','-1',
                            '-af',f'aformat=channel_layouts=stereo,loudnorm=I={target}:TP={PEAK}:LRA=50:{fields}:linear=true:print_format=json',
-                           '-ar','48000','-ac','2','-c:a','flac','-sample_fmt','s32',str(temporary)],state)
+                           '-ar','48000','-ac','2','-c:a','flac','-threads','1','-sample_fmt','s32',str(temporary)],state)
         verified=measure(temporary,target,state)
         output_i=float(verified['input_i']);output_tp=float(verified['input_tp'])
         if abs(output_i-target)>.7 or output_tp>PEAK+.2:

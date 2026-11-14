@@ -105,7 +105,7 @@ The original 2 MiB input limit rejected some larger embedded covers. The agent n
 Update both the restricted agent and Docker, then refresh the page. This upgrade clears the old server artwork cache and uses a new image URL version, so old missing-image responses are not reused. Re-scan the library if you later change its embedded covers. If artwork is still missing, inspect that specific track rather than assuming the rest of the library is broken.
 
 
-## Loudness matching (v0.5.0)
+## Loudness matching (v0.5.1)
 
 Soloist advertises [loudness normalization with peak limiting](https://github.com/spotify/soloist). [Spotify's normal reference is −14 LUFS](https://support.spotify.com/no-en/artists/article/track-not-as-loud-as-others/). UnicornTunes starts local preparation at that reference, using [FFmpeg's measured two-pass loudnorm filter](https://ffmpeg.org/ffmpeg-filters.html#loudnorm). The actual Soloist output level still needs a listening comparison; this application does not change Spotify's volume or claim to read Soloist's normalization preferences.
 
@@ -116,7 +116,7 @@ As the audio user on the playback device:
 ```sh
 sudo apt-get update
 sudo apt-get install -y ffmpeg
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.0/deploy/update-local-agent.sh -o /tmp/update-unicorntunes-agent.sh
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.1/deploy/update-local-agent.sh -o /tmp/update-unicorntunes-agent.sh
 bash /tmp/update-unicorntunes-agent.sh
 ```
 
