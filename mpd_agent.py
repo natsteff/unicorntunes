@@ -106,22 +106,26 @@ def execute(mpd,request):
         import local_loudness as loudness
         if action=='loudness_cancel':return loudness.cancel()
         songs=library(mpd)
-        if action=='loudness_status':return loudness.status(songs)
+        if action=='loudness_status':return loudness.status(songs,target=request.get('target',-14),reference=request.get('reference',100))
         if action=='loudness_start':return loudness.start(songs,request.get('target',-14))
         song=next((s for s in songs if s['uri']==request.get('uri')),None)
         if not song:raise ValueError('Track is not indexed.')
         root,state=loudness.paths()
-        return {'ready':bool(loudness.prepared(root,state,song,loudness.validate_target(request.get('target',-14))))}
+        entry=loudness.measurement(root,state,song)
+        return {'ready':bool(entry),'plan':loudness.playback_plan(entry,request.get('target',-14),request.get('reference',100)) if entry else None}
     if action=='scan':return {'job':dict(mpd.command('update')).get('updating_db')}
     if action=='library':return {'items':[{k:v for k,v in s.items() if k!='_file'} for s in library(mpd)]}
     if action=='status':
         status=dict(mpd.command('status'));current=dict(mpd.command('currentsong'))
         normalized=re.fullmatch(r'__unicorntunes_normalized/([a-f0-9]{64})\.flac',current.get('file',''))
         uri=('local:'+normalized[1]) if normalized else ('local:'+hashlib.sha256(current['file'].encode()).hexdigest() if current.get('file') else None)
-        return {'agent_version':5,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
+        import local_loudness as loudness
+        matched=loudness.playback_record(uri,status.get('songid'))
+        if matched and str(matched.get('volume'))!=str(status.get('volume')):matched=None
+        return {'agent_version':6,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
                 'progress_ms':round(float(status.get('elapsed',0))*1000),
                 'duration_ms':round(float(status.get('duration',0))*1000),'volume':status.get('volume'),
-                'error':status.get('error',''),'normalized':bool(normalized),'updating':bool(status.get('updating_db'))}
+                'error':status.get('error',''),'normalized':bool(matched),'legacy_copy':bool(normalized),'volume_plan':matched,'updating':bool(status.get('updating_db'))}
     if action=='picture':
         song=next((s for s in library(mpd) if s['uri']==request.get('uri')),None)
         if not song:raise ValueError('Local file is not in the scanned library')
@@ -129,6 +133,20 @@ def execute(mpd,request):
     if action=='volume':
         volume=request.get('volume')
         if type(volume) is not int or not 0<=volume<=100:raise ValueError('Invalid local volume')
+        if request.get('normalize') is True:
+            import local_loudness as loudness
+            before=dict(mpd.command('status'));current=dict(mpd.command('currentsong'))
+            uri='local:'+hashlib.sha256(current.get('file','').encode()).hexdigest()
+            if not loudness.playback_record(uri,before.get('songid')):raise ValueError('No owned cached-volume playback is active.')
+            song=next((s for s in library(mpd) if s['uri']==uri),None)
+            if not song:raise ValueError('Current file is no longer indexed.')
+            plan=loudness.cached_plan(song,request.get('target',-14),volume)
+            mpd.command('setvol',plan['volume'])
+            after=dict(mpd.command('status'))
+            if str(after.get('volume'))!=str(plan['volume']) or after.get('songid')!=before.get('songid'):
+                raise ValueError('The playback item or volume changed during adjustment.')
+            loudness.remember_playback(uri,before['songid'],plan)
+            return {'volume':volume,'applied_volume':plan['volume'],'plan':plan}
         mpd.command('setvol',volume)
         return {'volume':int(dict(mpd.command('status')).get('volume',-1))}
     if action=='play':
@@ -136,19 +154,20 @@ def execute(mpd,request):
         if not song:raise ValueError('Local file is not in the scanned library')
         playback_file=song['_file']
         normalized=request.get('normalize') is True
+        plan=None
         if normalized:
             import local_loudness as loudness
-            root,state=loudness.paths()
-            playback_file=loudness.prepared(root,state,song,loudness.validate_target(request.get('target',-14)))
-            if not playback_file:raise ValueError('Prepare this track for the selected loudness target first.')
+            plan=loudness.cached_plan(song,request.get('target',-14),request.get('volume',100))
         volume=request.get('volume',50)
         if not isinstance(volume,int) or not 0<=volume<=100:raise ValueError('Invalid local volume')
+        if plan:volume=plan['volume']
         # Dedicated MPD queue: one file, never automatic MPD advancement into another source.
         mpd.command('stop');mpd.command('clear');mpd.command('repeat',0);mpd.command('random',0)
         mpd.command('single',1);mpd.command('replay_gain_mode','off' if normalized else 'track');mpd.command('setvol',volume)
         song_id=dict(mpd.command('addid',playback_file))['Id']
         mpd.command('playid',song_id)
-        return {'song_id':song_id,'uri':uri}
+        if plan:loudness.remember_playback(uri,song_id,plan)
+        return {'song_id':song_id,'uri':uri,'volume':volume,'plan':plan}
     if action=='pause':mpd.command('pause',1)
     if action=='stop':mpd.command('stop')
     return {'ok':True}

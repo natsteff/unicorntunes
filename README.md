@@ -99,7 +99,7 @@ Spotify may restrict reading playlist contents to playlists the connected accoun
 
 Local-file entries returned by Spotify are visible with a **Local file · Soloist playback not verified** status. They cannot be requested through the existing Spotify-track playback path. This feature does not download playlists, transfer MP3s, or establish native Soloist local-file support.
 
-An optional [MPD local player](LOCAL_FILES.md) on the playback device supports uploaded music alongside Soloist. Search Spotify and local files together, request either source through the shared queue, and let UnicornTunes coordinate playback. The host configures the address and restricted SSH connection, tests it, and indexes the library. Local playback is linked to the selected Spotify device; Spotify is paused before MPD starts. Optional host loudness preparation creates verified level-matched playback copies while preserving originals. Final volume balance needs a listening comparison on the installed speakers.
+An optional [MPD local player](LOCAL_FILES.md) on the playback device supports uploaded music alongside Soloist. Search Spotify and local files together, request either source through the shared queue, and let UnicornTunes coordinate playback. The host configures the address and restricted SSH connection, tests it, and indexes the library. Local playback is linked to the selected Spotify device; Spotify is paused before MPD starts. Optional incremental loudness analysis caches measurements and adjusts MPD volume per original file, without rewriting media or generating audio copies. Final volume balance needs a listening comparison on the installed speakers.
 
 ## Host configuration and room features
 
@@ -144,3 +144,7 @@ This upgrade fixes requested-only play history and performs a **one-time played-
 The first request over background music starts immediately in a running session. A single **Like this song** button replaces the three reactions and remains separate from queue upvotes. Host playback-device diagnostics and explicit Soloist recovery require the v0.6.0 restricted-agent update; see [the local player guide](LOCAL_FILES.md#player-recovery-v060).
 
 For source switching, volume comparison, reboot and multi-phone checks, follow the [deployment acceptance checklist](DEPLOYMENT_CHECKLIST.md). The original personal Spotify account remains in use until the guest-account migration is deliberately performed after validation.
+
+## Upgrade notes for v0.7.0
+
+Local loudness matching now uses cached analysis and automatic MPD volume on original files. Update the restricted playback-device agent, scan library changes, then explicitly enable automatic levels. New/changed files are analyzed, unchanged files skipped and removed cache entries pruned. Target/reference adjustments reuse measurements. The old generated-copy mode is disabled on upgrade; existing copies are retained but excluded from new playback. See [the loudness guide](LOCAL_FILES.md#cached-loudness-and-automatic-volume-v070).

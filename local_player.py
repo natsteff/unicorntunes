@@ -65,6 +65,9 @@ class LocalPlayback:
     def local_init(self):
         path=self.data/'local-player.json'
         self.local_config=f.load(path) if path.exists() else {'enabled':False,'host':'','user':'','port':22,'device':'','volume':50}
+        if self.local_config.get('loudness_method')!='cached-volume-v1':
+            self.local_config.update(normalization_enabled=False,loudness_method='cached-volume-v1')
+            if path.exists():f.private_write(path,self.local_config)
         self.local=RemoteMPD(self.data,self.local_config)
         self.db.execute('CREATE TABLE IF NOT EXISTS local_tracks(uri TEXT PRIMARY KEY,metadata TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS local_art(uri TEXT PRIMARY KEY, mime TEXT, data BLOB, updated REAL)')
@@ -86,7 +89,8 @@ class LocalPlayback:
         if not self.local_config.get('enabled'):raise f.Failure('Enable and configure the local player first.')
         self.local.call('scan')
         for _ in range(20):
-            if not self.local.call('status').get('updating'):break
+            player_status=self.local.call('status')
+            if not player_status.get('updating'):break
             time.sleep(.25)
         else:raise f.Failure('Local library scan is still running; try again shortly.')
         result=self.local.call('library')
@@ -102,7 +106,12 @@ class LocalPlayback:
             self.db.execute('DELETE FROM local_tracks')
             self.db.executemany('INSERT INTO local_tracks VALUES(?,?)',[(s['uri'],json.dumps(s)) for s in cleaned])
         self.local_error=''
-        return {'count':len(cleaned)}
+        response={'count':len(cleaned)}
+        try:
+            if player_status.get('agent_version',0)<6:raise f.Failure('Update the Pine64 agent to v0.7.0 before cached analysis. No old copy job was started.')
+            response['loudness']=self.local.call('loudness_start',target=self.local_config.get('loudness_target',-14))
+        except f.Failure as error:response['loudness_error']=str(error)
+        return response
 
     def local_search(self,query,offset):
         terms=query.get('q',[''])[0].strip().casefold().split()
@@ -177,14 +186,19 @@ class LocalPlayback:
             raise f.Failure('Local volume must be a whole number from 0 to 100.')
         if self.local_active:
             self.owned_local_status()
-            result = self.local.call('volume', volume=volume)
+            options={'volume':volume}
+            if self.local_config.get('normalization_enabled'):options.update(normalize=True,target=self.local_config.get('loudness_target',-14))
+            result = self.local.call('volume', **options)
             if result.get('volume') != volume: raise f.Failure('MPD did not confirm the requested volume.')
         key='normalized_volume' if self.local_config.get('normalization_enabled') else 'volume'
         config = dict(self.local_config, **{key:volume})
         f.private_write(self.data/'local-player.json', config)
         self.local_config=config
         self.local.config=config
-        return {'volume':volume,'live':bool(self.local_active)}
+        response={'volume':volume,'live':bool(self.local_active)}
+        if self.local_active and self.local_config.get('normalization_enabled') and 'applied_volume' in result:
+            response['applied_volume']=result['applied_volume']
+        return response
 
     def local_action(self,sid,route,body):
         if route=='/api/host/player-diagnostics':
@@ -204,10 +218,9 @@ class LocalPlayback:
             self.reason='Soloist recovery requested. Refresh devices and start the session after it returns.'
             self.error='';self.next_poll=0
             return self.local.call('soloist_restart')
-        if route=='/api/host/loudness-status':return self.local.call('loudness_status')
+        if route=='/api/host/loudness-status':return self.local.call('loudness_status',target=self.local_config.get('loudness_target',-14),reference=self.local_config.get('normalized_volume',100))
         if route=='/api/host/loudness-start':
-            if self.local_config.get('normalization_enabled'):
-                raise f.Failure('Disable matched playback before preparing a new loudness target.')
+            if self.local.call('status').get('agent_version',0)<6:raise f.Failure('Update the playback-device agent to v0.7.0 before starting cached analysis.')
             from local_loudness import validate_target
             return self.local.call('loudness_start',target=validate_target(body.get('target',-14)))
         if route=='/api/host/loudness-cancel':return self.local.call('loudness_cancel')
@@ -219,10 +232,10 @@ class LocalPlayback:
             volume=body.get('volume',100)
             if type(volume) is not int or not 0<=volume<=100:raise f.Failure('Output level must be between 0 and 100.')
             if enabled:
-                status=self.local.call('loudness_status')
-                if status.get('running') or status.get('phase')!='complete' or not status.get('total') or status.get('ready')!=status['total'] or status.get('target')!=target:
-                    raise f.Failure('Prepare every local track successfully at this target before enabling matching.')
-            config=dict(self.local_config,normalization_enabled=enabled,loudness_target=target,normalized_volume=volume)
+                status=self.local.call('loudness_status',target=target,reference=volume)
+                if status.get('method')!='cached-volume-v1':raise f.Failure('Update the playback-device agent for cached-volume analysis.')
+                if not status.get('ready'):raise f.Failure('Analyze at least one local file before enabling cached-volume playback. Unanalyzed files remain unavailable until scanned.')
+            config=dict(self.local_config,normalization_enabled=enabled,loudness_target=target,normalized_volume=volume,loudness_method='cached-volume-v1')
             f.private_write(self.data/'local-player.json',config)
             self.local_config=config;self.local.config=config
             return {'enabled':enabled,'volume':volume,'target':target}
@@ -283,8 +296,8 @@ class LocalPlayback:
         if status.get('error'): raise f.Failure('MPD reports an error: ' + status['error'])
         self.check_rules(row)
         normalized=self.local_config.get('normalization_enabled',False)
-        if normalized and not self.local.call('loudness_check',uri=row['uri'],target=self.local_config.get('loudness_target',-14)).get('ready'):
-            raise f.Failure('This local track needs loudness preparation before playback.')
+        if normalized and not self.local.call('loudness_check',uri=row['uri'],target=self.local_config.get('loudness_target',-14),reference=self.local_config.get('normalized_volume',100)).get('ready'):
+            raise f.Failure('This local track needs loudness analysis before playback.')
         actual = (spotify.get('device') or {}).get('id')
         if actual and actual != self.device: raise f.Failure('Another Spotify device is active; local playback was not started.')
         self.commit_selection(row['id'])

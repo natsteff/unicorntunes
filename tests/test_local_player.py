@@ -30,7 +30,7 @@ class LocalPlayerTests(unittest.TestCase):
         self.assertIsNone(self.app.room_state(guest)['local_player'])
         with self.assertRaises(PermissionError):
             self.app.action(guest, '/api/host/local-test', {})
-        self.assertEqual(json.loads((Path(self.temp.name)/'local-player.json').read_text()), config)
+        self.assertEqual(json.loads((Path(self.temp.name)/'local-player.json').read_text()), dict(config,loudness_method='cached-volume-v1',normalization_enabled=False))
 
     def test_rejects_shell_arguments(self):
         for host in ['-oProxyCommand=bad', 'host;bad', 'host\nbad']:
@@ -41,11 +41,18 @@ class LocalPlayerTests(unittest.TestCase):
         self.app.local_config['enabled'] = True
         song = dict(uri='local:'+'a'*64,name='Test', artists='Artist',album='',year='')
         self.app.local = Mock()
-        self.app.local.call.side_effect = [{'job':'1'}, {'updating':False}, {'items':[song]}]
-        self.assertEqual(self.app.scan_local(), {'count':1})
-        self.assertEqual([c.args[0] for c in self.app.local.call.call_args_list], ['scan','status','library'])
+        self.app.local.call.side_effect = [{'job':'1'}, {'updating':False,'agent_version':6}, {'items':[song]}, {'started':True}]
+        self.assertEqual(self.app.scan_local(), {'count':1,'loudness':{'started':True}})
+        self.assertEqual([c.args[0] for c in self.app.local.call.call_args_list], ['scan','status','library','loudness_start'])
         self.app.api.call.assert_not_called()
         self.assertEqual(self.app.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0], 1)
+
+    def test_old_agent_indexes_without_starting_obsolete_copy_job(self):
+        self.app.local_config['enabled']=True;self.app.local=Mock()
+        self.app.local.call.side_effect=[{}, {'updating':False,'agent_version':5}, {'items':[]}]
+        result=self.app.scan_local()
+        self.assertIn('v0.7.0',result['loudness_error'])
+        self.assertEqual([c.args[0] for c in self.app.local.call.call_args_list],['scan','status','library'])
 
     def test_remote_requires_dedicated_keys(self):
         with self.assertRaisesRegex(f.Failure, 'dedicated'):

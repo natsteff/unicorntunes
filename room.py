@@ -196,6 +196,9 @@ class RoomFeatures(RequestHistory):
         if local:
             indexed = self.db.execute('SELECT metadata FROM local_tracks WHERE uri=?', (uri,)).fetchone()
             song = json.loads(indexed[0]) if indexed else None
+            if song and self.local_config.get('normalization_enabled'):
+                if not self.local.call('loudness_check',uri=uri,target=self.local_config.get('loudness_target',-14),reference=self.local_config.get('normalized_volume',100)).get('ready'):
+                    raise f.Failure('This file is waiting for loudness analysis. Scan the local library and request it once analyzed.')
         if not song:
             raise f.Failure('Search for this track first.')
         self.check_rules(song)

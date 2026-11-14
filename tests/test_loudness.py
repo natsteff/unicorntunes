@@ -13,89 +13,114 @@ import mpd_agent
 import web_server as w
 
 URI='local:'+'a'*64
-SONG={'uri':URI,'name':'Quiet song','_file':'quiet.wav','duration_ms':8000}
-
+SONG={'uri':URI,'name':'Song','_file':'song.wav','duration_ms':8000}
 
 class LoudnessTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)/'music';self.root.mkdir()
         self.state=Path(self.temp.name)/'state';self.state.mkdir()
+        (self.root/'song.wav').write_bytes(b'original')
     def tearDown(self):self.temp.cleanup()
 
-    def test_ffmpeg_measurement_allows_trailing_log_messages(self):
-        report={'input_i':'-14.0','input_tp':'-1.0','input_lra':'3','input_thresh':'-24','target_offset':'0'}
-        result=Mock(returncode=0,stderr='FFmpeg log\n'+json.dumps(report)+'\n[out#0] Final muxer statistics\n')
-        with patch('local_loudness.subprocess.run',return_value=result):
-            self.assertEqual(loud.run_ffmpeg([],self.state),report)
+    def test_incremental_add_change_delete_rename_and_target_changes(self):
+        with patch('local_loudness.measure',return_value={'input_i':'-10','input_tp':'-2'}) as measure:
+            self.assertEqual(loud.analyze(SONG,self.root,self.state),'analyzed')
+            self.assertEqual(loud.analyze(SONG,self.root,self.state),'skipped')
+            entry=loud.measurement(self.root,self.state,SONG)
+            self.assertNotEqual(loud.playback_plan(entry,-14)['volume'],loud.playback_plan(entry,-18)['volume'])
+            (self.root/'renamed.wav').write_bytes(b'original')
+            renamed=dict(SONG,uri='local:'+'b'*64,_file='renamed.wav')
+            self.assertEqual(loud.analyze(renamed,self.root,self.state),'reused')
+            self.assertEqual(loud.reconcile([renamed],self.state),1)
+            (self.root/'renamed.wav').write_bytes(b'changed')
+            self.assertIsNone(loud.measurement(self.root,self.state,renamed))
+            self.assertEqual(loud.analyze(renamed,self.root,self.state),'analyzed')
+            self.assertEqual(measure.call_count,2)
+            self.assertEqual(loud.reconcile([],self.state),1)
+            self.assertEqual(loud.cache(self.state),{})
+        self.assertEqual((self.root/'song.wav').read_bytes(),b'original')
+        self.assertFalse((self.root/loud.CACHE_FOLDER).exists())
 
-    def test_targets_and_source_paths_are_bounded(self):
-        for value in [-21,-10,float('nan'),True,'-14']:
-            with self.assertRaises(ValueError):loud.validate_target(value)
-        for value in ['../outside.wav','/etc/passwd',loud.CACHE_FOLDER+'/x.flac']:
-            with self.assertRaises(ValueError):loud.source_path(self.root,value)
-        outside=Path(self.temp.name)/'outside.wav';outside.write_bytes(b'123')
-        (self.root/'link.wav').symlink_to(outside)
-        with self.assertRaises(ValueError):loud.source_path(self.root,'link.wav')
+    def test_curve_peak_ceiling_and_no_amplification(self):
+        self.assertAlmostEqual(loud.volume_gain(50),-18.473,places=2)
+        for percent in range(1,101):self.assertEqual(loud.gain_volume(loud.volume_gain(percent)),percent)
+        peak=loud.playback_plan({'input_lufs':-20,'true_peak':0})
+        self.assertTrue(peak['limited']);self.assertLessEqual(peak['estimated_true_peak'],-1)
+        quiet=loud.playback_plan({'input_lufs':-30,'true_peak':-10})
+        self.assertEqual(quiet['volume'],100);self.assertTrue(quiet['limited'])
+        self.assertEqual(loud.playback_plan({'input_lufs':-10,'true_peak':-2},reference=0)['volume'],0)
 
-    def test_original_fingerprint_controls_prepared_copy(self):
-        source=self.root/'quiet.wav';source.write_bytes(b'original')
-        output=loud.output_path(self.root,URI);output.parent.mkdir();output.write_bytes(b'copy')
-        loud.write_json(self.state/'manifest.json',{URI:{'recipe':loud.RECIPE,'target':-14.0,'source':loud.fingerprint(source),'output':loud.fingerprint(output)}})
-        self.assertTrue(loud.prepared(self.root,self.state,SONG,-14))
-        self.assertIsNone(loud.prepared(self.root,self.state,SONG,-12))
-        source.write_bytes(b'changed original');self.assertIsNone(loud.prepared(self.root,self.state,SONG,-14))
-
-    def test_derived_copies_do_not_duplicate_library_or_change_identity(self):
-        mpd=Mock();mpd.command.return_value=[('file',loud.CACHE_FOLDER+'/'+'a'*64+'.flac'),('Title','copy'),('file','quiet.wav'),('Time','8')]
-        songs=mpd_agent.library(mpd);self.assertEqual(len(songs),1);self.assertEqual(songs[0]['name'],'quiet')
-        mpd.command.side_effect=[[('state','play'),('songid','2')],[('file',loud.CACHE_FOLDER+'/'+'a'*64+'.flac')]]
-        status=mpd_agent.execute(mpd,{'action':'status'})
-        self.assertEqual(status['uri'],URI);self.assertTrue(status['normalized'])
-
-    def test_prepared_playback_disables_replaygain(self):
+    def test_play_uses_original_and_bound_volume_record(self):
         mpd=Mock()
         def command(name,*args):
-            if name=='listallinfo':return [('file','quiet.wav'),('Time','8')]
+            if name=='listallinfo':return [('file','song.wav'),('Time','8')]
             if name=='addid':return [('Id','7')]
             return []
         mpd.command.side_effect=command
-        with patch('local_loudness.prepared',return_value=loud.CACHE_FOLDER+'/prepared.flac'):
-            result=mpd_agent.execute(mpd,{'action':'play','uri':'local:'+hashlib.sha256(b'quiet.wav').hexdigest(),'normalize':True,'volume':100})
-        self.assertEqual(result['song_id'],'7')
-        self.assertTrue(any(c.args==('replay_gain_mode','off') for c in mpd.command.call_args_list))
-        self.assertTrue(any(c.args==('addid',loud.CACHE_FOLDER+'/prepared.flac') for c in mpd.command.call_args_list))
+        plan=loud.playback_plan({'input_lufs':-10,'true_peak':-2})
+        with patch('local_loudness.cached_plan',return_value=plan),patch('local_loudness.paths',return_value=(self.root,self.state)):
+            uri='local:'+hashlib.sha256(b'song.wav').hexdigest()
+            result=mpd_agent.execute(mpd,{'action':'play','uri':uri,'normalize':True,'volume':100})
+            self.assertEqual(result['song_id'],'7')
+            self.assertIsNotNone(loud.playback_record(uri,'7'));self.assertIsNone(loud.playback_record(uri,'8'))
+        self.assertIn(unittest.mock.call('addid','song.wav'),mpd.command.call_args_list)
+        self.assertIn(unittest.mock.call('setvol',plan['volume']),mpd.command.call_args_list)
+        self.assertIn(unittest.mock.call('replay_gain_mode','off'),mpd.command.call_args_list)
 
-    def test_missing_copy_never_stops_or_starts_mpd(self):
-        mpd=Mock();mpd.command.return_value=[('file','quiet.wav'),('Time','8')]
-        with patch('local_loudness.prepared',return_value=None):
-            with self.assertRaises(ValueError):mpd_agent.execute(mpd,{'action':'play','uri':'local:'+hashlib.sha256(b'quiet.wav').hexdigest(),'normalize':True})
+    def test_missing_analysis_never_stops_playback(self):
+        mpd=Mock();mpd.command.return_value=[('file','song.wav'),('Time','8')]
+        with patch('local_loudness.cached_plan',side_effect=ValueError('needs analysis')):
+            with self.assertRaises(ValueError):mpd_agent.execute(mpd,{'action':'play','uri':'local:'+hashlib.sha256(b'song.wav').hexdigest(),'normalize':True})
         self.assertFalse(any(c.args[0] in ('stop','playid') for c in mpd.command.call_args_list))
 
-    def test_space_reserve_fails_before_processing(self):
-        (self.root/'quiet.wav').write_bytes(b'audio')
-        disk=shutil._ntuple_diskusage(1024,1023,1)
-        with patch('local_loudness.shutil.disk_usage',return_value=disk),patch('local_loudness.run_ffmpeg') as runner:
-            with self.assertRaisesRegex(ValueError,'space'):loud.prepare(SONG,-14,self.root,self.state)
-        runner.assert_not_called()
+    def test_rescan_coalesces_and_worker_reconciles_latest_snapshot(self):
+        job={'running':True,'method':loud.METHOD}
+        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.active_job',return_value=job),patch('local_loudness.shutil.which',return_value='ffmpeg'):
+            self.assertTrue(loud.start([SONG])['queued'])
+            loud.start([])
+        self.assertEqual(loud.read_json(self.state/'pending.json',{})['songs'],[])
+        loud.write_json(self.state/'input.json',{'songs':[SONG]})
+        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.os.nice'),patch('local_loudness.measure',return_value={'input_i':'-10','input_tp':'-2'}):loud.run()
+        self.assertEqual(loud.cache(self.state),{})
+        job=loud.read_json(self.state/'job.json',{})
+        self.assertEqual(job['phase'],'complete');self.assertEqual(job['removed'],1)
 
-    @unittest.skipUnless(shutil.which('ffmpeg'),'FFmpeg is required for audio integration test')
-    def test_quiet_and_loud_audio_match_without_modifying_originals(self):
-        outputs=[]
-        for name,volume in [('quiet','0.03'),('loud','0.9')]:
-            source=self.root/(name+'.wav')
-            subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','sine=frequency=440:duration=8',
-                            '-af','volume='+volume,'-c:a','pcm_s16le',str(source)],check=True,capture_output=True)
-            before=hashlib.sha256(source.read_bytes()).hexdigest()
-            uri='local:'+hashlib.sha256(source.name.encode()).hexdigest()
-            song=dict(SONG,uri=uri,_file=source.name)
-            self.assertEqual(loud.prepare(song,-14,self.root,self.state),'prepared')
-            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),before)
-            entry=loud.read_json(self.state/'manifest.json',{})[uri];outputs.append(entry['output_lufs'])
-            self.assertLessEqual(entry['true_peak'],-.8)
-            self.assertEqual(loud.prepare(song,-14,self.root,self.state),'cached')
-        self.assertLess(abs(outputs[0]-outputs[1]),.5)
-        self.assertTrue(all(abs(level+14)<.7 for level in outputs))
+    def test_legacy_job_is_stopped_without_launching_new_copy_job(self):
+        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.active_job',return_value={'running':True}),patch('local_loudness.shutil.which',return_value='ffmpeg'),patch('local_loudness.subprocess.Popen') as spawn:
+            with self.assertRaisesRegex(ValueError,'Old audio-copy'):loud.start([SONG])
+            self.assertTrue((self.state/'cancel').exists());spawn.assert_not_called()
 
+    def test_cancel_and_empty_scan_do_not_run_ffmpeg(self):
+        loud.write_json(self.state/'input.json',{'songs':[SONG]});(self.state/'cancel').touch()
+        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.os.nice'),patch('local_loudness.measure') as process:
+            loud.run();process.assert_not_called()
+        self.assertEqual(loud.read_json(self.state/'job.json',{})['phase'],'cancelled')
+        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.shutil.which',return_value=None),patch('local_loudness.subprocess.Popen') as spawn:
+            spawn.return_value.pid=12345
+            self.assertTrue(loud.start([])['started']);self.assertTrue(spawn.call_args.kwargs['start_new_session'])
+
+    def test_paths_are_bounded_and_nonfinite_reports_rejected(self):
+        for value in ['../outside.wav','/etc/passwd',loud.CACHE_FOLDER+'/x.flac']:
+            with self.assertRaises(ValueError):loud.source_path(self.root,value)
+        for value in [float('nan'),True,'-14',-21]:
+            with self.assertRaises(ValueError):loud.validate_target(value)
+        report={'input_i':'-14','input_tp':'-1'}
+        with patch('local_loudness.subprocess.run',return_value=Mock(returncode=0,stderr=json.dumps(report)+'\nlog trailer')):
+            self.assertEqual(loud.run_ffmpeg([],self.state),report)
+
+    @unittest.skipUnless(shutil.which('ffmpeg'),'FFmpeg required')
+    def test_real_analysis_keeps_original_and_reuses_measurement(self):
+        source=self.root/'song.wav';source.unlink()
+        subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=440:duration=8','-c:a','pcm_s16le',str(source)],check=True,capture_output=True)
+        original=source.read_bytes()
+        self.assertEqual(loud.analyze(SONG,self.root,self.state),'analyzed')
+        entry=loud.measurement(self.root,self.state,SONG)
+        self.assertTrue(-40<entry['input_lufs']<-10)
+        self.assertLessEqual(loud.playback_plan(entry)['estimated_true_peak'],-1)
+        with patch('local_loudness.measure') as measure:
+            self.assertEqual(loud.analyze(SONG,self.root,self.state),'skipped');measure.assert_not_called()
+        self.assertEqual(source.read_bytes(),original)
+        self.assertEqual(list(self.root.iterdir()),[source])
 
 class LoudnessHostTests(unittest.TestCase):
     def setUp(self):
@@ -106,16 +131,22 @@ class LoudnessHostTests(unittest.TestCase):
     def test_host_only_and_incomplete_library_cannot_enable(self):
         guest,_=self.app.session('')
         with self.assertRaises(PermissionError):self.app.action(guest,'/api/host/loudness-start',{'target':-14})
-        self.app.local.call.return_value={'phase':'complete','running':False,'ready':1,'total':2,'target':-14}
+        self.app.local.call.return_value={'method':loud.METHOD,'ready':0,'total':2}
         with self.assertRaises(f.Failure):self.app.action(self.sid,'/api/host/loudness-config',{'enabled':True,'target':-14,'volume':100})
         self.assertFalse(self.app.local_config.get('normalization_enabled',False))
 
     def test_enable_preserves_original_volume_and_live_adjusts_active_mode(self):
-        self.app.local.call.return_value={'phase':'complete','running':False,'ready':2,'total':2,'target':-14}
+        self.app.local.call.return_value={'method':loud.METHOD,'ready':2,'total':2}
         self.app.action(self.sid,'/api/host/loudness-config',{'enabled':True,'target':-14,'volume':100})
         self.assertEqual(self.app.local_config['volume'],50)
         self.app.apply_local_volume(85)
         self.assertEqual(self.app.local_config['normalized_volume'],85);self.assertEqual(self.app.local_config['volume'],50)
+
+    def test_partial_analysis_can_enable_but_old_copy_readiness_cannot(self):
+        self.app.local.call.return_value={'method':loud.METHOD,'ready':1,'total':2,'running':True}
+        self.assertTrue(self.app.action(self.sid,'/api/host/loudness-config',{'enabled':True})['enabled'])
+        self.app.local.call.return_value={'ready':2,'total':2}
+        with self.assertRaises(f.Failure):self.app.action(self.sid,'/api/host/loudness-config',{'enabled':True})
 
     def test_disable_does_not_start_or_stop_audio(self):
         self.app.action(self.sid,'/api/host/loudness-config',{'enabled':False})
@@ -125,6 +156,7 @@ class LoudnessHostTests(unittest.TestCase):
         self.app.device='speaker';self.app.local_config.update(enabled=True,device='speaker',normalization_enabled=True)
         song=dict(uri=URI,name='Track',artists='Artist',source='local',duration_ms=8000)
         self.app.db.execute('INSERT INTO local_tracks VALUES(?,?)',(URI,json.dumps(song)));self.app.db.commit()
+        self.app.local.call.return_value={'ready':True}
         self.app.submit(self.sid,URI);row=self.app.queue(self.sid)[0]
         self.app.local.call.side_effect=[{'state':'stop'},{'ready':False}]
         self.app.api.call.reset_mock()
@@ -136,49 +168,8 @@ class LoudnessHostTests(unittest.TestCase):
         self.app.device='speaker';self.app.local_config.update(enabled=True,device='speaker',normalization_enabled=True,loudness_target=-14,normalized_volume=90)
         song=dict(uri=URI,name='Track',artists='Artist',source='local',duration_ms=8000)
         self.app.db.execute('INSERT INTO local_tracks VALUES(?,?)',(URI,json.dumps(song)));self.app.db.commit()
+        self.app.local.call.return_value={'ready':True}
         self.app.submit(self.sid,URI);row=self.app.queue(self.sid)[0]
         self.app.local.call.side_effect=[{'state':'stop'},{'ready':True},{'song_id':'7'}]
         self.app.start_local_request(row,{'device':{'id':'speaker'},'is_playing':False})
         self.assertEqual(self.app.local.call.call_args.kwargs,{'uri':URI,'volume':90,'normalize':True,'target':-14})
-
-
-class LoudnessJobTests(unittest.TestCase):
-    def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)/'music';self.root.mkdir()
-        self.state=Path(self.temp.name)/'state';self.state.mkdir()
-    def tearDown(self):self.temp.cleanup()
-
-    def test_installed_hyphenated_agent_can_be_loaded_by_worker(self):
-        import os
-        import sys
-        installed=Path(self.temp.name)/'agent';installed.mkdir()
-        shutil.copyfile(Path(mpd_agent.__file__),installed/'mpd-agent.py')
-        shutil.copyfile(Path(loud.__file__),installed/'local_loudness.py')
-        result=subprocess.run([sys.executable,'-c','import local_loudness; print(local_loudness.mpd_protocol().__name__)'],
-                              cwd=installed,env=dict(os.environ,PYTHONPATH=str(installed)),capture_output=True,text=True)
-        self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(result.stdout.strip(),'MPD')
-
-    def test_start_is_detached_and_cannot_duplicate_active_job(self):
-        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.shutil.which',return_value='/usr/bin/ffmpeg'),patch('local_loudness.status',return_value={'running':False}),patch('local_loudness.subprocess.Popen') as spawn:
-            spawn.return_value.pid=12345
-            self.assertTrue(loud.start([SONG],-14)['started'])
-            self.assertTrue(spawn.call_args.kwargs['start_new_session'])
-            self.assertNotIn('shell',spawn.call_args.kwargs)
-        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.shutil.which',return_value='/usr/bin/ffmpeg'),patch('local_loudness.status',return_value={'running':True}),patch('local_loudness.subprocess.Popen') as spawn:
-            with self.assertRaises(ValueError):loud.start([SONG],-14)
-            spawn.assert_not_called()
-
-    def test_cancelled_job_finishes_without_starting_audio(self):
-        loud.write_json(self.state/'input.json',{'songs':[SONG],'target':-14})
-        (self.state/'cancel').touch()
-        with patch('local_loudness.paths',return_value=(self.root,self.state)),patch('local_loudness.os.nice'),patch('local_loudness.run_ffmpeg') as process:
-            loud.run()
-            process.assert_not_called()
-        result=loud.read_json(self.state/'job.json',{})
-        self.assertFalse(result['running']);self.assertEqual(result['phase'],'cancelled')
-
-    def test_reused_pid_is_not_reported_as_active_preparation(self):
-        import os
-        loud.write_json(self.state/'job.json',{'running':True,'pid':os.getpid(),'target':-14,'phase':'preparing'})
-        result=loud.status([],self.root,self.state)
-        self.assertFalse(result['running']);self.assertEqual(result['phase'],'interrupted')

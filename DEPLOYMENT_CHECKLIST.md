@@ -8,7 +8,7 @@ These checks require the actual playback device, speakers and guest devices. Aut
 - While background music is playing with no requested tracks, add a Spotify request and confirm it starts immediately. Repeat with a local request. An actual requested song must not be interrupted by the next arrival.
 - Request Spotify → local → Spotify, then two local files consecutively. Listen for overlap, unexpected volume jumps, and source-order problems.
 - Let the queue empty, then request a new song from each source and confirm playback restarts.
-- Compare several quiet/loud local files after loudness preparation with Spotify at a fixed speaker/amplifier setting. Calibrate matched local output; preparation's digital loudness check is not a speaker measurement.
+- Compare several quiet/loud local files after cached loudness analysis with Spotify at a fixed speaker/amplifier setting. Calibrate the local reference; the estimated digital loudness is not a speaker measurement.
 - Verify pause, skip, stop, uncertain-request reconciliation and the selected playback-location binding.
 - Use two or more real phones to confirm names, one initial request vote, one additional vote per other guest, protected next selection, every-third-oldest scheduling and one like per guest per requested play.
 - Confirm background tracks never enter recent history, played rankings or favorite play counts. Existing user-request/vote statistics are intentionally preserved by history cleanup.

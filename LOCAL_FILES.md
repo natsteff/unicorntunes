@@ -54,11 +54,11 @@ For a nonstandard SSH port add `-p PORT` to `ssh-keyscan`. A changed address may
 
 ## 4. Test from the host desk
 
-Open `/host`, sign in, and expand **Local music player**. Enter the playback device's address, audio username and SSH port. Select the matching Spotify playback device, enable the connection, and save. Press **Test connection**, then **Scan local library**. Successful results show MPD's state and an indexed track count.
+Open `/host`, sign in, and expand **Local music player**. Enter the playback device's address, audio username and SSH port. Select the matching Spotify playback device, enable the connection, and save. Press **Test connection**, then **Scan library changes**. Successful results show MPD's state and an indexed track count.
 
 Prefer a stable hostname or DHCP reservation. Connection settings and keys persist in `/data`; the Mac is not required for normal operation. Back up that volume securely.
 
-The default local volume of 50 is a trial setting. ReplayGain can use existing track tags, but loudness analysis and matching Spotify volume remain pending. Avoid treating a percentage as normalized loudness.
+The default local volume of 50 is a trial setting. Without automatic levels, ReplayGain can use existing track tags. Use cached loudness analysis below for per-track automatic volume. Avoid treating a percentage as normalized loudness.
 
 ## Mixed playback
 
@@ -105,42 +105,40 @@ The original 2 MiB input limit rejected some larger embedded covers. The agent n
 Update both the restricted agent and Docker, then refresh the page. This upgrade clears the old server artwork cache and uses a new image URL version, so old missing-image responses are not reused. Re-scan the library if you later change its embedded covers. If artwork is still missing, inspect that specific track rather than assuming the rest of the library is broken.
 
 
-## Loudness matching (v0.5.1)
+## Cached loudness and automatic volume (v0.7.0)
 
-Soloist advertises [loudness normalization with peak limiting](https://github.com/spotify/soloist). [Spotify's normal reference is −14 LUFS](https://support.spotify.com/no-en/artists/article/track-not-as-loud-as-others/). UnicornTunes starts local preparation at that reference, using [FFmpeg's measured two-pass loudnorm filter](https://ffmpeg.org/ffmpeg-filters.html#loudnorm). The actual Soloist output level still needs a listening comparison; this application does not change Spotify's volume or claim to read Soloist's normalization preferences.
+The playback device analyzes original files with FFmpeg and stores only measurements in a small JSON cache. Playback uses the original file with a calculated MPD software volume. No MP3 rewriting, tag changes, or new audio copies are involved.
 
-### One-time playback-device update
+### Update the playback device
 
-As the audio user on the playback device:
+Run as the existing audio user:
 
 ```sh
-sudo apt-get update
 sudo apt-get install -y ffmpeg
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.1/deploy/update-local-agent.sh -o /tmp/update-unicorntunes-agent.sh
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.7.0/deploy/update-local-agent.sh -o /tmp/update-unicorntunes-agent.sh
 bash /tmp/update-unicorntunes-agent.sh
 ```
 
-The update includes `local_loudness.py` beside the existing restricted agent. No SSH reauthorization or Soloist restart is required. New installs using the authorization helper include both files. Update Docker normally afterward.
+The agent reports version 6. Update Docker afterward. SSH reauthorization and Soloist restarts are unnecessary. The update asks obsolete copy preparation to stop after its current step. Existing generated copies remain on disk, excluded from search; they are not used for new playback. The old copy mode is disabled on upgrade and must be explicitly replaced with automatic levels after analysis.
 
-### Prepare and enable
+### Scan and enable
 
-1. In `/host` → **Local music player** → **Match local loudness to Spotify**, leave the target at **Normal reference (−14 LUFS)** and click **Prepare local library**.
-2. Wait for all tracks to be prepared. Progress survives closing the browser. **Refresh progress** reads status; **Stop preparation** stops after the current processing step. Preparation runs at reduced CPU priority with one FFmpeg processing thread. Existing originals remain usable while preparing.
-3. Check **Use level-matched playback copies**, review **Matched local output**, and click **Save loudness matching**. All indexed originals must have valid copies at this target. A new or changed file requires preparation again before it can play in matched mode.
-4. Compare representative prepared local tracks with Spotify at a fixed amplifier/sink setting. The matched output starts at 100, removing the old trial-volume reduction. Lower **Local playback volume** and use **Apply local volume** if local audio is louder; while matched mode is active, that adjustment changes the matched output level. If 100 is still too quiet, disable matched mode, select a louder target, and prepare again. Do not assume equal source percentages mean equal loudness.
+1. Open `/host` → **Local music player** → **Match local loudness to Spotify** and click **Scan library changes**.
+2. This indexes additions/removals and starts incremental analysis. Unchanged size/mtime matches are skipped; changed or new files are analyzed, and removed entries are pruned. Identical content moved to a new filename can reuse its measured result. Repeated scans while busy queue the latest library snapshot. Progress continues after closing the browser.
+3. Review progress and errors, then enable **Auto-adjust original-file volume from cached analysis** and **Save automatic levels**. At least one valid measurement is required. Files still awaiting analysis cannot be requested in this mode; valid cached files remain available.
+4. Compare representative local and Spotify tracks at a fixed amplifier/sink setting. Start with the −14 LUFS target and adjust the calibration reference as needed. Changing the target/reference uses the existing measurements immediately; it does not require another analysis scan.
 
-Enabling matching affects future local starts; finish or stop the active local track before changing modes. Disabling restores playback from originals at the saved original-mode volume. Neither mode selection nor preparation automatically starts music.
+After adding, changing or removing files, use **Scan library changes** again. This is an ongoing incremental scan, not a scan limited to initial setup. **Stop analysis** takes effect after the current FFmpeg step; a later scan resumes with valid cache entries skipped. Finish local playback before switching modes. Analysis and mode selection do not start music.
 
-### File handling, limits and validation
+### Gain calculation and limitations
 
-Preparation analyzes each source, renders a stereo 48 kHz FLAC playback copy, then independently re-measures the copy. The default target is −14 LUFS with a −1 dB true-peak ceiling. Copies are accepted only within 0.7 LUFS of the target and at or below −0.8 dBTP (allowing measurement rounding). Quiet sources can be raised and peak limiting can be used where needed. ReplayGain is disabled only for matched copies to avoid a second loudness adjustment. Originals, original tags and embedded covers are never rewritten.
+Each file needs one FFmpeg analysis pass plus a checksum read. Measurements live under `$HOME/.local/share/unicorntunes-local/loudness/measurements.json`, keyed by track identity with source size, modification time and checksum. Processing uses one filter thread at reduced CPU priority. A known duration of up to 30 minutes is required. Silence and unreadable files produce per-track errors.
 
-Generated copies live under the reserved `__unicorntunes_normalized` directory inside the music directory; that folder is omitted from guest/library search. Names, artwork, original track IDs, request attribution, voting and queue ownership continue to use the original track. Deleting a generated copy invalidates its readiness and preparation rebuilds it. Do not upload personal tracks into this reserved folder.
+The calculation accounts for [MPD 0.24.4's exponential software mixer curve](https://github.com/MusicPlayerDaemon/MPD/blob/v0.24.4/src/mixer/plugins/SoftwareMixerPlugin.cxx), as configured by the setup helper. A reference of 100 represents unity gain; it is not a command to play every track at 100. Each track receives its own level before playback, with ReplayGain disabled to avoid double adjustment. Live reference adjustment verifies ownership of the current MPD item.
 
-The managed copy budget is 4 GiB, with a 512 MiB free-space reserve. A file needs a known duration no longer than 30 minutes. Silence, unreadable sources, insufficient space, changed files or failed output checks are reported by track and do not alter originals. Preparation is resumable: unchanged verified copies at the selected target are reused. A failed or interrupted job must be resumed successfully before matching is enabled.
+Volume alone cannot amplify beyond MPD 100 or limit individual peaks. The calculation only attenuates and respects an estimated −1 dB true-peak ceiling. Tracks that cannot reach the target are listed with their limiting reason. Very quiet files may therefore remain quieter; no lossy file changes or hidden transcoding are performed. Digital measurements and the −14 LUFS starting target do not guarantee the installed Soloist and MPD outputs sound identical; compare them on the actual speakers.
 
-Automated tests use real FFmpeg audio to verify matching across quiet/loud inputs, true-peak bounds, original-file hashes and reuse of prepared copies. Physical output matching, preparation time and resource use on a particular playback board still require deployment testing.
-
+Automated tests cover incremental reuse, changes/removals, gain and peak limits, original-file playback, ownership and real FFmpeg analysis without modifying source bytes.
 
 ## Player recovery (v0.6.0)
 

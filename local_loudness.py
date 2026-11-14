@@ -1,39 +1,36 @@
 #!/usr/bin/env python3
-"""Non-destructive, finite background preparation of level-matched MPD copies."""
+"""Incremental loudness measurements and MPD software-volume planning; no audio copies."""
 import fcntl
 import hashlib
 import json
 import math
 import os
 from pathlib import Path, PurePosixPath
-import re
 import shutil
 import subprocess
 import sys
 import time
 
-CACHE_FOLDER = '__unicorntunes_normalized'
-RECIPE = 1
-PEAK = -1.0
-CACHE_LIMIT = 4 * 1024**3
-FREE_RESERVE = 512 * 1024**2
+# Reserved only to hide legacy generated files. This module never creates audio files.
+CACHE_FOLDER='__unicorntunes_normalized'
+METHOD='cached-volume-v1'
+ANALYSIS_VERSION=1
+PEAK=-1.0
 
 
-class Cancelled(Exception):
-    pass
+class Cancelled(Exception):pass
 
 
-def paths():
-    return Path.home()/'Music/UnicornTunes', Path.home()/'.local/share/unicorntunes-local/loudness'
+def paths():return Path.home()/'Music/UnicornTunes',Path.home()/'.local/share/unicorntunes-local/loudness'
 
 
 def read_json(path, default):
-    try: return json.loads(path.read_text())
-    except FileNotFoundError: return default
+    try:return json.loads(path.read_text())
+    except FileNotFoundError:return default
 
 
 def write_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     temporary=path.with_name(path.name+'.tmp')
     with open(temporary,'w',encoding='utf-8') as output:
         os.chmod(temporary,0o600);json.dump(data,output);output.flush();os.fsync(output.fileno())
@@ -48,169 +45,214 @@ def validate_target(value):
 
 def source_path(root, relative):
     path=PurePosixPath(relative)
-    if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0]==CACHE_FOLDER:
-        raise ValueError('Invalid source file.')
+    if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0]==CACHE_FOLDER:raise ValueError('Invalid source file.')
     result=(root/relative).resolve()
-    if not result.is_relative_to(root.resolve()) or not result.is_file():
-        raise ValueError('Source file is unavailable or outside the music directory.')
+    if not result.is_relative_to(root.resolve()) or not result.is_file():raise ValueError('Source is missing or outside the music directory.')
     return result
 
 
 def fingerprint(path):
-    stat=path.stat()
-    return [stat.st_size,stat.st_mtime_ns]
+    stat=path.stat();return [stat.st_size,stat.st_mtime_ns]
 
 
-def output_path(root, uri):
-    if not re.fullmatch(r'local:[a-f0-9]{64}',str(uri)):raise ValueError('Invalid local track ID.')
-    return root/CACHE_FOLDER/(uri[6:]+'.flac')
+def cache(state):return read_json(state/'measurements.json',{})
 
 
-def prepared(root, state, song, target):
-    entry=read_json(state/'manifest.json',{}).get(song['uri'])
-    if not entry or entry.get('recipe')!=RECIPE or entry.get('target')!=target:return None
+def measurement(root,state,song):
+    entry=cache(state).get(song['uri'])
+    if not entry or entry.get('version')!=ANALYSIS_VERSION:return None
     try:
-        source=source_path(root,song['_file']);output=output_path(root,song['uri'])
-        if entry.get('source')!=fingerprint(source) or entry.get('output')!=fingerprint(output):return None
-        return str(output.relative_to(root))
-    except (OSError,ValueError):return None
+        if entry.get('path')!=song['_file'] or entry.get('source')!=fingerprint(source_path(root,song['_file'])):return None
+        if not all(math.isfinite(float(entry[key])) for key in ('input_lufs','true_peak')):return None
+        return entry
+    except (OSError,ValueError,KeyError):return None
 
 
-def status(songs, root=None, state=None):
-    if root is None:root,state=paths()
+def volume_gain(volume):
+    if type(volume) is not int or not 0<=volume<=100:raise ValueError('Volume must be an integer from 0 to 100.')
+    if volume==0:return float('-inf')
+    return 20*math.log10(math.expm1(volume/25)/math.expm1(4))
+
+
+def gain_volume(gain):
+    if gain==float('-inf'):return 0
+    if not math.isfinite(gain):raise ValueError('Invalid playback gain.')
+    # Floor to a supported MPD percent: never overshoot the requested gain/peak ceiling.
+    return max(0,min(100,math.floor(25*math.log1p(10**(min(0,gain)/20)*math.expm1(4))+1e-9)))
+
+
+def playback_plan(entry,target=-14,reference=100):
+    target=validate_target(target);reference_gain=volume_gain(reference)
+    loudness=float(entry['input_lufs']);peak=float(entry['true_peak'])
+    if not math.isfinite(loudness) or not math.isfinite(peak):raise ValueError('Invalid cached loudness measurement.')
+    effective_target=target+reference_gain
+    requested=effective_target-loudness
+    safe=min(requested,0,PEAK-peak)
+    volume=gain_volume(safe);actual_gain=volume_gain(volume)
+    reason=''
+    if reference and safe<requested-.01:reason='peak limit' if PEAK-peak<0 and PEAK-peak<requested else 'cannot boost above 100'
+    return {'volume':volume,'reference':reference,'gain_db':round(actual_gain,3) if volume else None,
+            'target':target,'effective_target':round(effective_target,2) if reference else None,
+            'estimated_lufs':round(loudness+actual_gain,2) if volume else None,
+            'estimated_true_peak':round(peak+actual_gain,2) if volume else None,
+            'limited':bool(reason),'reason':reason,'method':METHOD}
+
+
+def cached_plan(song,target=-14,reference=100):
+    root,state=paths();entry=measurement(root,state,song)
+    if not entry:raise ValueError('This file needs loudness analysis. Scan the local library.')
+    return playback_plan(entry,target,reference)
+
+
+def remember_playback(uri,song_id,plan):
+    _,state=paths();write_json(state/'playback-volume.json',dict(plan,uri=uri,song_id=str(song_id)))
+
+
+def playback_record(uri,song_id):
+    _,state=paths();record=read_json(state/'playback-volume.json',{})
+    return record if record.get('method')==METHOD and record.get('uri')==uri and record.get('song_id')==str(song_id) else None
+
+
+def active_job(state):
     job=read_json(state/'job.json',{})
     if job.get('running'):
         try:
             pid=int(job['pid']);os.kill(pid,0)
             command=Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-            if str(Path(__file__).resolve()).encode() not in command or b'--run' not in command:
-                raise ValueError('Preparation process is no longer running.')
-        except (OSError,ValueError,KeyError):
-            job=dict(job,running=False,phase='interrupted',error='Preparation stopped. Start again to resume cached work.')
-    target=job.get('target',-14.0)
-    ready=sum(bool(prepared(root,state,song,target)) for song in songs)
-    disk=shutil.disk_usage(root)
-    return dict(job,ready=ready,total=len(songs),target=target,ffmpeg=bool(shutil.which('ffmpeg')),
-                free_mb=disk.free//1024**2,cache_mb=sum(p.stat().st_size for p in (root/CACHE_FOLDER).glob('*.flac'))//1024**2)
+            if str(Path(__file__).resolve()).encode() not in command or b'--run' not in command:raise ValueError()
+        except (OSError,ValueError,KeyError):job=dict(job,running=False,phase='interrupted')
+    return job
 
 
-def start(songs, target):
-    target=validate_target(target);root,state=paths()
-    if not shutil.which('ffmpeg'):raise ValueError('Install ffmpeg on the playback device first: sudo apt install ffmpeg')
-    if not songs:raise ValueError('No local songs are indexed.')
-    state.mkdir(parents=True,exist_ok=True,mode=0o700)
-    with open(state/'job.lock','a') as lock:
-        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:raise ValueError('Loudness preparation is already running.')
-        if status(songs,root,state).get('running'):raise ValueError('Loudness preparation is already running.')
-        (state/'cancel').unlink(missing_ok=True)
-        write_json(state/'input.json',{'songs':songs,'target':target})
-        write_json(state/'job.json',{'running':True,'target':target,'phase':'starting','done':0,'errors':[]})
-        process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--run'],stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
-        write_json(state/'job.json',{'running':True,'pid':process.pid,'target':target,'phase':'starting','done':0,'errors':[]})
+def status(songs,root=None,state=None,target=None,reference=100):
+    if root is None:root,state=paths()
+    job=active_job(state);target=validate_target(job.get('target',-14) if target is None else target)
+    ready=0;limited=[]
+    for song in songs:
+        entry=measurement(root,state,song)
+        if entry:
+            ready+=1;plan=playback_plan(entry,target,reference)
+            if plan['limited']:limited.append(dict(name=song['name'],reason=plan['reason'],estimated_lufs=plan['estimated_lufs'],volume=plan['volume']))
+    return dict(job,method=METHOD,analysis_version=ANALYSIS_VERSION,legacy_job=bool(job.get('running') and job.get('method')!=METHOD),
+                ready=ready,total=len(songs),target=target,ffmpeg=bool(shutil.which('ffmpeg')),limited=limited,
+                rescan_queued=(state/'pending.json').exists(),cache_bytes=(state/'measurements.json').stat().st_size if (state/'measurements.json').exists() else 0)
+
+
+def start(songs,target=-14):
+    target=validate_target(target);root,state=paths();state.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if any(not measurement(root,state,s) for s in songs) and not shutil.which('ffmpeg'):
+        raise ValueError('Install ffmpeg on the playback device first: sudo apt install ffmpeg')
+    with open(state/'submit.lock','a') as submission:
+        fcntl.flock(submission,fcntl.LOCK_EX)
+        with open(state/'job.lock','a') as lock:
+            locked=True
+            try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError:locked=False
+            running=active_job(state)
+            if not locked or running.get('running'):
+                if (state/'cancel').exists():raise ValueError('The previous scan is stopping. Wait for its current step, then scan again.')
+                if running.get('method')!=METHOD:
+                    (state/'cancel').touch(mode=0o600)
+                    raise ValueError('Old audio-copy preparation is stopping. Wait for its current step, then scan again.')
+                write_json(state/'pending.json',{'songs':songs,'target':target})
+                return {'started':False,'queued':True,'target':target}
+            (state/'cancel').unlink(missing_ok=True)
+            (state/'pending.json').unlink(missing_ok=True)
+            write_json(state/'input.json',{'songs':songs,'target':target})
+            process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--run'],stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            write_json(state/'job.json',{'running':True,'pid':process.pid,'method':METHOD,'target':target,'phase':'starting','done':0,'errors':[]})
     return {'started':True,'target':target}
 
 
 def cancel():
-    _,state=paths();state.mkdir(parents=True,exist_ok=True,mode=0o700)
-    (state/'cancel').touch(mode=0o600)
+    _,state=paths();state.mkdir(parents=True,exist_ok=True,mode=0o700);(state/'cancel').touch(mode=0o600)
     return {'cancel_requested':True}
 
 
-def run_ffmpeg(args, state):
+def run_ffmpeg(args,state):
     if (state/'cancel').exists():raise Cancelled()
     result=subprocess.run(['ffmpeg','-nostdin','-hide_banner','-nostats','-threads','1','-filter_threads','1']+args,
                           capture_output=True,text=True,timeout=1800)
     if (state/'cancel').exists():raise Cancelled()
-    if result.returncode:raise ValueError('FFmpeg could not process this audio file.')
+    if result.returncode:raise ValueError('FFmpeg could not analyze this file.')
     try:
         report,_=json.JSONDecoder().raw_decode(result.stderr[result.stderr.rfind('{'):])
-        for key in ('input_i','input_tp','input_lra','input_thresh','target_offset'):
-            if not math.isfinite(float(report[key])):raise ValueError()
+        if not all(math.isfinite(float(report[k])) for k in ('input_i','input_tp')):raise ValueError()
         return report
-    except (ValueError,KeyError):raise ValueError('No finite loudness measurement; the file may be silent or unreadable.')
+    except (ValueError,KeyError):raise ValueError('No finite measurement; the file may be silent or unreadable.')
 
 
-def measure(source, target, state):
+def measure(source,state):
+    # One read/analysis pass, discarded output only. No source/target audio is written.
     return run_ffmpeg(['-i',str(source),'-map','0:a:0','-vn','-sn','-dn','-af',
-                      f'aformat=channel_layouts=stereo,loudnorm=I={target}:TP={PEAK}:LRA=50:print_format=json','-f','null','-'],state)
+                      'aformat=channel_layouts=stereo,loudnorm=I=-14:TP=-1:LRA=50:print_format=json','-f','null','-'],state)
 
 
-def prepare(song, target, root, state):
-    existing=prepared(root,state,song,target)
-    if existing:return 'cached'
+def analyze(song,root,state):
+    if measurement(root,state,song):return 'skipped'
     source=source_path(root,song['_file']);before=fingerprint(source)
-    duration=song.get('duration_ms',0)/1000
-    if not 0<duration<=1800:raise ValueError('Preparation requires a known duration of at most 30 minutes.')
-    output=output_path(root,song['uri']);output.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-    if output.parent.is_symlink():raise ValueError('The playback-copy directory must not be a symlink.')
-    temporary=output.with_name('.'+output.stem+'.part.flac')
-    temporary.unlink(missing_ok=True)
-    estimated=int(duration*48000*3*2)+1024**2
-    used=sum(p.stat().st_size for p in output.parent.glob('*.flac'))
-    if used+estimated>CACHE_LIMIT or shutil.disk_usage(root).free<estimated+FREE_RESERVE:
-        raise ValueError('Not enough cache space: 4 GiB copy budget and 512 MiB free reserve required.')
-    try:
-        first=measure(source,target,state)
-        fields=':'.join(f'{key}={first[value]}' for key,value in
-                        [('measured_I','input_i'),('measured_TP','input_tp'),('measured_LRA','input_lra'),
-                         ('measured_thresh','input_thresh'),('offset','target_offset')])
-        report=run_ffmpeg(['-y','-i',str(source),'-map','0:a:0','-vn','-sn','-dn','-map_metadata','-1',
-                           '-af',f'aformat=channel_layouts=stereo,loudnorm=I={target}:TP={PEAK}:LRA=50:{fields}:linear=true:print_format=json',
-                           '-ar','48000','-ac','2','-c:a','flac','-threads','1','-sample_fmt','s32',str(temporary)],state)
-        verified=measure(temporary,target,state)
-        output_i=float(verified['input_i']);output_tp=float(verified['input_tp'])
-        if abs(output_i-target)>.7 or output_tp>PEAK+.2:
-            raise ValueError('The prepared copy did not meet loudness/peak limits; original remains unchanged.')
-        if fingerprint(source)!=before:raise ValueError('Source changed during preparation; try again.')
-        temporary.chmod(0o600);os.replace(temporary,output)
-        manifest=read_json(state/'manifest.json',{})
-        manifest[song['uri']]={'recipe':RECIPE,'target':target,'source':before,'output':fingerprint(output),
-                               'input_lufs':float(first['input_i']),'output_lufs':output_i,'true_peak':output_tp}
-        write_json(state/'manifest.json',manifest)
-        return 'prepared'
-    finally:temporary.unlink(missing_ok=True)
+    if not 0<song.get('duration_ms',0)<=1800000:raise ValueError('Analysis requires a known duration of at most 30 minutes.')
+    digest=hashlib.sha256()
+    with source.open('rb') as stream:
+        for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
+    checksum=digest.hexdigest();entries=cache(state)
+    matched=next((entry for entry in entries.values() if entry.get('sha256')==checksum and entry.get('version')==ANALYSIS_VERSION),None)
+    if matched:entry=dict(matched)
+    else:
+        result=measure(source,state)
+        entry={'version':ANALYSIS_VERSION,'input_lufs':float(result['input_i']),'true_peak':float(result['input_tp']),'sha256':checksum}
+    if fingerprint(source)!=before:raise ValueError('Source changed during analysis; scan again.')
+    entry.update(path=song['_file'],source=before)
+    entries=cache(state);entries[song['uri']]=entry;write_json(state/'measurements.json',entries)
+    return 'reused' if matched else 'analyzed'
 
 
-def mpd_protocol():
-    try:
-        from mpd_agent import MPD
-        return MPD
-    except ModuleNotFoundError:
-        # The forced SSH command is installed with a hyphenated filename.
-        import importlib.util
-        spec=importlib.util.spec_from_file_location('unicorntunes_mpd_protocol',Path(__file__).with_name('mpd-agent.py'))
-        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-        return module.MPD
+def reconcile(songs,state):
+    entries=cache(state);ids={s['uri'] for s in songs};removed=[uri for uri in entries if uri not in ids]
+    for uri in removed:del entries[uri]
+    if removed:write_json(state/'measurements.json',entries)
+    return len(removed)
 
 
 def run():
     root,state=paths();state.mkdir(parents=True,exist_ok=True,mode=0o700)
     with open(state/'job.lock','a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX)
-        data=read_json(state/'input.json',{});target=validate_target(data['target'])
-        songs=data['songs'];job={'running':True,'pid':os.getpid(),'target':target,'phase':'preparing','done':0,'errors':[]}
+        fcntl.flock(lock,fcntl.LOCK_EX);data=read_json(state/'input.json',{})
+        job={'running':True,'pid':os.getpid(),'method':METHOD,'phase':'scanning','done':0,'errors':[],
+             'analyzed':0,'skipped':0,'reused':0,'removed':0,'target':validate_target(data.get('target',-14))}
+        finalized=False
         try:
             os.nice(10)
-            for song in songs:
-                if (state/'cancel').exists():raise Cancelled()
-                job.update(current=song['name']);write_json(state/'job.json',job)
-                try:prepare(song,target,root,state)
-                except (ValueError,OSError,subprocess.TimeoutExpired) as error:
-                    job['errors'].append({'name':song['name'],'error':str(error)[:200]})
-                job['done']+=1;write_json(state/'job.json',job)
-            # Index copies before declaring the batch ready for playback.
-            with mpd_protocol()() as mpd:
-                mpd.command('update',CACHE_FOLDER)
-                deadline=time.monotonic()+60
-                while dict(mpd.command('status')).get('updating_db'):
-                    if time.monotonic()>deadline:raise ValueError('MPD is still indexing copies. Refresh its library before enabling matching.')
-                    time.sleep(.25)
-            job.update(phase='complete',current='')
-        except Cancelled:job.update(phase='cancelled',current='')
-        except Exception as error:job.update(phase='failed',error=str(error)[:200])
-        finally:job['running']=False;write_json(state/'job.json',job)
+            while True:
+                songs=data['songs'];job.update(done=0,total=len(songs),current='',target=validate_target(data.get('target',-14)))
+                for song in songs:
+                    if (state/'cancel').exists():raise Cancelled()
+                    job.update(current=song['name']);write_json(state/'job.json',job)
+                    try:
+                        outcome=analyze(song,root,state);job[outcome]+=1
+                    except (ValueError,OSError,subprocess.TimeoutExpired) as error:
+                        job['errors'].append({'name':song['name'],'error':str(error)[:200]})
+                    job['done']+=1;write_json(state/'job.json',job)
+                # Prune only after additions/renames have had a chance to reuse cached content.
+                job['removed']+=reconcile(songs,state)
+                with open(state/'submit.lock','a') as submission:
+                    fcntl.flock(submission,fcntl.LOCK_EX)
+                    pending=read_json(state/'pending.json',None)
+                    if pending:
+                        (state/'pending.json').unlink();data=pending;job['errors']=[];continue
+                    job.update(running=False,phase='complete',current='');write_json(state/'job.json',job)
+                    fcntl.flock(lock,fcntl.LOCK_UN)
+                    finalized=True
+                    return
+        except Cancelled:job.update(running=False,phase='cancelled',current='')
+        except Exception as error:job.update(running=False,phase='failed',error=str(error)[:200])
+        finally:
+            if not finalized:
+                with open(state/'submit.lock','a') as submission:
+                    fcntl.flock(submission,fcntl.LOCK_EX)
+                    job['running']=False;write_json(state/'job.json',job)
+                    fcntl.flock(lock,fcntl.LOCK_UN)
 
 
 if __name__=='__main__' and sys.argv[1:]==['--run']:run()
