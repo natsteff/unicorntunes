@@ -26,6 +26,9 @@ def main():
     agent.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, agent)
     agent.chmod(0o600)
+    loudness=source.parent/'local_loudness.py'
+    shutil.copyfile(loudness,agent.parent/'local_loudness.py')
+    (agent.parent/'local_loudness.py').chmod(0o600)
     ssh = home / '.ssh'
     ssh.mkdir(mode=0o700, exist_ok=True)
     ssh.chmod(0o700)

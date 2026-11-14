@@ -179,23 +179,49 @@ class LocalPlayback:
             self.owned_local_status()
             result = self.local.call('volume', volume=volume)
             if result.get('volume') != volume: raise f.Failure('MPD did not confirm the requested volume.')
-        config = dict(self.local_config, volume=volume)
+        key='normalized_volume' if self.local_config.get('normalization_enabled') else 'volume'
+        config = dict(self.local_config, **{key:volume})
         f.private_write(self.data/'local-player.json', config)
         self.local_config=config
         self.local.config=config
         return {'volume':volume,'live':bool(self.local_active)}
 
     def local_action(self,sid,route,body):
+        if route=='/api/host/loudness-status':return self.local.call('loudness_status')
+        if route=='/api/host/loudness-start':
+            if self.local_config.get('normalization_enabled'):
+                raise f.Failure('Disable matched playback before preparing a new loudness target.')
+            from local_loudness import validate_target
+            return self.local.call('loudness_start',target=validate_target(body.get('target',-14)))
+        if route=='/api/host/loudness-cancel':return self.local.call('loudness_cancel')
+        if route=='/api/host/loudness-config':
+            if self.local_active:raise f.Failure('Finish local playback before changing loudness mode.')
+            from local_loudness import validate_target
+            enabled=body.get('enabled') is True
+            target=validate_target(body.get('target',-14))
+            volume=body.get('volume',100)
+            if type(volume) is not int or not 0<=volume<=100:raise f.Failure('Output level must be between 0 and 100.')
+            if enabled:
+                status=self.local.call('loudness_status')
+                if status.get('running') or status.get('phase')!='complete' or not status.get('total') or status.get('ready')!=status['total'] or status.get('target')!=target:
+                    raise f.Failure('Prepare every local track successfully at this target before enabling matching.')
+            config=dict(self.local_config,normalization_enabled=enabled,loudness_target=target,normalized_volume=volume)
+            f.private_write(self.data/'local-player.json',config)
+            self.local_config=config;self.local.config=config
+            return {'enabled':enabled,'volume':volume,'target':target}
         if route=='/api/host/local-volume':return self.apply_local_volume(body.get('volume'))
         if route=='/api/host/local-config':
             if self.local_active:raise f.Failure('Stop or finish local playback before changing its connection.')
-            config={'enabled':bool(body.get('enabled')),'host':str(body.get('host','')).strip(),
+            config=dict(self.local_config,**{'enabled':bool(body.get('enabled')),'host':str(body.get('host','')).strip(),
                     'user':str(body.get('user','')).strip(),'port':int(body.get('port',22)),
-                    'device':str(body.get('device','')),'volume':int(body.get('volume',50))}
+                    'device':str(body.get('device','')),'volume':int(body.get('volume',50))})
             if not 1<=config['port']<=65535 or not 0<=config['volume']<=100:raise f.Failure('Invalid port or local volume.')
             if config['enabled']:
                 if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{0,252}',config['host']) or not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}',config['user']):raise f.Failure('Enter a valid player hostname/IP and SSH username.')
                 if not config['device']:raise f.Failure('Select the matching Spotify playback device before binding local playback.')
+            if config.get('normalization_enabled'):
+                config['normalized_volume']=int(body.get('volume',100))
+                config['volume']=self.local_config.get('volume',50)
             f.private_write(self.data/'local-player.json',config)
             self.local_config=config;self.local=RemoteMPD(self.data,config)
             return {'ok':True}
@@ -239,6 +265,9 @@ class LocalPlayback:
             raise f.Failure('MPD has another active track. Stop it before starting local playback.')
         if status.get('error'): raise f.Failure('MPD reports an error: ' + status['error'])
         self.check_rules(row)
+        normalized=self.local_config.get('normalization_enabled',False)
+        if normalized and not self.local.call('loudness_check',uri=row['uri'],target=self.local_config.get('loudness_target',-14)).get('ready'):
+            raise f.Failure('This local track needs loudness preparation before playback.')
         actual = (spotify.get('device') or {}).get('id')
         if actual and actual != self.device: raise f.Failure('Another Spotify device is active; local playback was not started.')
         self.commit_selection(row['id'])
@@ -256,7 +285,9 @@ class LocalPlayback:
                     if not observed.get('is_playing'): break
                     time.sleep(.25)
                 else: raise f.Failure('Spotify pause was not confirmed; local playback was not started.')
-            result = self.local.call('play', uri=row['uri'], volume=self.local_config.get('volume',50))
+            options={'uri':row['uri'],'volume':self.local_config.get('normalized_volume',100) if normalized else self.local_config.get('volume',50)}
+            if normalized:options.update(normalize=True,target=self.local_config.get('loudness_target',-14))
+            result = self.local.call('play', **options)
             if result.get('song_id') is None: raise f.Failure('Local start response did not identify the MPD queue item.')
             self.local_active.update(song_id=str(result['song_id']), starting=False)
             self.set_meta('local_active', self.local_active)
@@ -310,7 +341,7 @@ class LocalPlayback:
             raise f.Failure('Spotify playback resumed or moved during a local track. MPD paused; check both players before restarting.')
         if status.get('error'): raise f.Failure('MPD reports an error: ' + status['error'])
         song = json.loads(row['metadata'])
-        self.now = dict(song, playing=status['state']=='play', progress_ms=status.get('progress_ms',0))
+        self.now = dict(song, playing=status['state']=='play', progress_ms=status.get('progress_ms',0), normalized=bool(status.get('normalized')))
         self.updated = time.time()
         self.error = ''
         if status['state'] == 'play':

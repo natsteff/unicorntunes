@@ -8,3 +8,4 @@
 !local_player.py
 !mpd_agent.py
 !requirements.txt
+!local_loudness.py

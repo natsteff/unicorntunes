@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-client 
 RUN groupadd --gid 10001 foxtunes && useradd --uid 10001 --gid 10001 --no-create-home foxtunes && mkdir /data && chown foxtunes:foxtunes /data
 ARG APP_VERSION=0.3.0-dev
 ENV UNICORNTUNES_VERSION=$APP_VERSION
-COPY foxtunes.py web_server.py room.py local_player.py mpd_agent.py ./
+COPY foxtunes.py web_server.py room.py local_player.py mpd_agent.py local_loudness.py ./
 COPY web/ ./web/
 USER 10001:10001
 VOLUME ["/data"]

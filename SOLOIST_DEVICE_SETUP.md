@@ -123,3 +123,8 @@ The MPD trial plays files accessible on the playback device independently of Spo
 - [ ] User-service/audio startup verified after reboot without interactive login.
 - [ ] Optional MPD installation, configuration, audio and reboot checks verified before claiming support.
 - [ ] Backups cover required configuration/state and local media; credentials excluded from public docs.
+
+
+## Optional local loudness preparation
+
+Install the `ffmpeg` package on the playback device and use the v0.5.0 restricted-agent update. Follow [Loudness matching](LOCAL_FILES.md#loudness-matching-v050) to prepare, verify and enable non-destructive FLAC playback copies through the host page. The helper does not change Soloist, SSH permissions or original media. Allow space for up to 4 GiB of copies plus the 512 MiB free reserve; the final source balance must be compared on the installed audio output.

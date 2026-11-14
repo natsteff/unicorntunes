@@ -103,3 +103,40 @@ The helper validates and atomically replaces only the installed agent; it does n
 The original 2 MiB input limit rejected some larger embedded covers. The agent now accepts up to 16 MiB, and Docker generates small thumbnails without modifying the MP3 or its tags. Resizing runs on Docker, so the Pine64 needs no imaging package. Failures are cached per track; one bad or oversized image no longer blocks other covers. Host users can hover a missing-cover placeholder to see the returned error.
 
 Update both the restricted agent and Docker, then refresh the page. This upgrade clears the old server artwork cache and uses a new image URL version, so old missing-image responses are not reused. Re-scan the library if you later change its embedded covers. If artwork is still missing, inspect that specific track rather than assuming the rest of the library is broken.
+
+
+## Loudness matching (v0.5.0)
+
+Soloist advertises [loudness normalization with peak limiting](https://github.com/spotify/soloist). [Spotify's normal reference is −14 LUFS](https://support.spotify.com/no-en/artists/article/track-not-as-loud-as-others/). UnicornTunes starts local preparation at that reference, using [FFmpeg's measured two-pass loudnorm filter](https://ffmpeg.org/ffmpeg-filters.html#loudnorm). The actual Soloist output level still needs a listening comparison; this application does not change Spotify's volume or claim to read Soloist's normalization preferences.
+
+### One-time playback-device update
+
+As the audio user on the playback device:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y ffmpeg
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.0/deploy/update-local-agent.sh -o /tmp/update-unicorntunes-agent.sh
+bash /tmp/update-unicorntunes-agent.sh
+```
+
+The update includes `local_loudness.py` beside the existing restricted agent. No SSH reauthorization or Soloist restart is required. New installs using the authorization helper include both files. Update Docker normally afterward.
+
+### Prepare and enable
+
+1. In `/host` → **Local music player** → **Match local loudness to Spotify**, leave the target at **Normal reference (−14 LUFS)** and click **Prepare local library**.
+2. Wait for all tracks to be prepared. Progress survives closing the browser. **Refresh progress** reads status; **Stop preparation** stops after the current processing step. Preparation runs at reduced CPU priority with one FFmpeg processing thread. Existing originals remain usable while preparing.
+3. Check **Use level-matched playback copies**, review **Matched local output**, and click **Save loudness matching**. All indexed originals must have valid copies at this target. A new or changed file requires preparation again before it can play in matched mode.
+4. Compare representative prepared local tracks with Spotify at a fixed amplifier/sink setting. The matched output starts at 100, removing the old trial-volume reduction. Lower **Local playback volume** and use **Apply local volume** if local audio is louder; while matched mode is active, that adjustment changes the matched output level. If 100 is still too quiet, disable matched mode, select a louder target, and prepare again. Do not assume equal source percentages mean equal loudness.
+
+Enabling matching affects future local starts; finish or stop the active local track before changing modes. Disabling restores playback from originals at the saved original-mode volume. Neither mode selection nor preparation automatically starts music.
+
+### File handling, limits and validation
+
+Preparation analyzes each source, renders a stereo 48 kHz FLAC playback copy, then independently re-measures the copy. The default target is −14 LUFS with a −1 dB true-peak ceiling. Copies are accepted only within 0.7 LUFS of the target and at or below −0.8 dBTP (allowing measurement rounding). Quiet sources can be raised and peak limiting can be used where needed. ReplayGain is disabled only for matched copies to avoid a second loudness adjustment. Originals, original tags and embedded covers are never rewritten.
+
+Generated copies live under the reserved `__unicorntunes_normalized` directory inside the music directory; that folder is omitted from guest/library search. Names, artwork, original track IDs, request attribution, voting and queue ownership continue to use the original track. Deleting a generated copy invalidates its readiness and preparation rebuilds it. Do not upload personal tracks into this reserved folder.
+
+The managed copy budget is 4 GiB, with a 512 MiB free-space reserve. A file needs a known duration no longer than 30 minutes. Silence, unreadable sources, insufficient space, changed files or failed output checks are reported by track and do not alter originals. Preparation is resumable: unchanged verified copies at the selected target are reused. A failed or interrupted job must be resumed successfully before matching is enabled.
+
+Automated tests use real FFmpeg audio to verify matching across quiet/loud inputs, true-peak bounds, original-file hashes and reuse of prepared copies. Physical output matching, preparation time and resource use on a particular playback board still require deployment testing.

@@ -7,9 +7,13 @@ if [ ! -f "$agent_dir/mpd-agent.py" ]; then
   exit 1
 fi
 agent_tmp="$(mktemp "$agent_dir/.mpd-agent.XXXXXX")"
-trap 'rm -f "$agent_tmp"' EXIT
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.4.2/mpd_agent.py -o "$agent_tmp"
-python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$agent_tmp"
+loudness_tmp="$(mktemp "$agent_dir/.loudness.XXXXXX")"
+trap 'rm -f "$agent_tmp" "$loudness_tmp"' EXIT
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.0/mpd_agent.py -o "$agent_tmp"
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.5.0/local_loudness.py -o "$loudness_tmp"
+python3 -c 'import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]' "$agent_tmp" "$loudness_tmp"
+chmod 600 "$loudness_tmp"
+mv "$loudness_tmp" "$agent_dir/local_loudness.py"
 chmod 600 "$agent_tmp"
 mv "$agent_tmp" "$agent_dir/mpd-agent.py"
 printf '%s\n' 'Restricted agent updated. No playback or SSH permissions changed.'

@@ -103,7 +103,7 @@ Spotify may restrict reading playlist contents to playlists the connected accoun
 
 Local-file entries returned by Spotify are visible with a **Local file · Soloist playback not verified** status. They cannot be requested through the existing Spotify-track playback path. This feature does not download playlists, transfer MP3s, or establish native Soloist local-file support.
 
-An optional [MPD local player](LOCAL_FILES.md) on the playback device supports uploaded music alongside Soloist. Search Spotify and local files together, request either source through the shared queue, and let UnicornTunes coordinate playback. The host configures the address and restricted SSH connection, tests it, and indexes the library. Local playback is linked to the selected Spotify device; Spotify is paused before MPD starts. Hardware transition and volume-balance testing are still required.
+An optional [MPD local player](LOCAL_FILES.md) on the playback device supports uploaded music alongside Soloist. Search Spotify and local files together, request either source through the shared queue, and let UnicornTunes coordinate playback. The host configures the address and restricted SSH connection, tests it, and indexes the library. Local playback is linked to the selected Spotify device; Spotify is paused before MPD starts. Optional host loudness preparation creates verified level-matched playback copies while preserving originals. Final volume balance needs a listening comparison on the installed speakers.
 
 ## Host configuration and room features
 
