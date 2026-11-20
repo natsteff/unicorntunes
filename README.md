@@ -72,6 +72,14 @@ An enabled session stays ready after observed playback exhausts: the next new re
 
 Anonymous identity is device/cookie based, not account authentication. Different devices or cleared cookies create different identities. Identical provided names are combined for the casual user leaderboard.
 
+## Legacy tablet kiosk
+
+Open `/legacy` on older tablets for a lightweight guest interface with song/artist search, Spotify/local source selection, requests, votes, now playing and the shared queue. **Next guest** starts a fresh guest identity; saving a name labels that identity. Host administration remains at `/host`.
+
+The legacy page uses separate assets, ES5 JavaScript and XMLHttpRequest. It includes Apple Home Screen web-app metadata and avoids modern dialogs. Live updates preserve search text and keyboard focus. Connection failures disable actions while the page reconnects; failed mutations are never automatically replayed. Check the queue before retrying an action after a timeout.
+
+The page targets iOS 9 Safari, but actual iPad 2 compatibility, Home Screen fullscreen behavior and long-session stability still require device validation. Guided Access can restrict casual access to Safari; unattended reopening after a device reboot is not provided. Modern browsers continue using `/` or `/display`.
+
 ## Fair queue
 
 Fair mode is enabled by default:

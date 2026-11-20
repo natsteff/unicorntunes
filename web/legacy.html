@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black"><meta name="apple-mobile-web-app-title" content="UnicornTunes"><title>UnicornTunes kiosk</title><link rel="apple-touch-icon" href="/favicon.png"><link rel="stylesheet" href="/legacy.css"></head>
+<body><main>
+<header><img src="/foxtunes-logo.png" alt="UnicornTunes"><p>Shared music kiosk <span id="version"></span></p></header>
+<p id="connection" role="status">Connecting to UnicornTunes…</p><p id="notice" role="status" aria-live="polite"></p>
+<noscript>This kiosk requires JavaScript. Enable it in Safari settings.</noscript>
+<section><h1>What should we play next?</h1><p id="guest">Choose a name, or continue as a guest.</p><form id="name-form"><label for="guest-input">Your name</label><input id="guest-input" type="text" maxlength="48" autocomplete="off"><button id="save-name" type="submit" disabled>Save name</button><button id="switch-guest" type="button" disabled>Next guest</button></form><p class="hint">Next guest clears the previous visitor's identity. You can request without providing a name.</p></section>
+<section><h2>Find music</h2><form id="search-form"><label for="query">Song or artist</label><input id="query" type="text" maxlength="150" autocomplete="off" autocapitalize="off"><label for="source">Search in</label><select id="source"><option value="all">Spotify + local files</option><option value="spotify">Spotify only</option><option value="local">Local files only</option></select><button id="search-button" type="submit" disabled>Search</button></form><p id="search-status" role="status"></p><div id="results"></div><div id="pages" hidden><button id="previous" type="button">Previous</button><button id="next" type="button">More results</button></div></section>
+<section><h2>Now playing</h2><div id="now">Waiting for live status.</div></section>
+<section><h2>Request queue</h2><p id="queue-status"></p><div id="queue"></div></section>
+<footer>UnicornTunes · Shared kiosk · Guest controls only</footer>
+</main><script src="/legacy.js"></script></body></html>
