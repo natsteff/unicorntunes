@@ -104,16 +104,31 @@ class App(RoomFeatures, LocalPlayback):
         self.idle_ready = False
         self.local_init()
 
-    def session(self, sid):
+    def session(self, sid, create=True):
         now = time.time()
-        for key in list(self.sessions):
-            if self.sessions[key]['expires'] < now:
-                del self.sessions[key]
+        def discard(key):
+            del self.sessions[key]
+            # Session rate limits must not outlive the sessions they protect.
+            for bucket in list(self.limits):
+                if isinstance(bucket, tuple) and key in bucket[1:]:
+                    del self.limits[bucket]
+        for key, value in list(self.sessions.items()):
+            if value['expires'] <= now or (not value['host'] and
+                    value.get('seen', now) <= now - 30 * 60):
+                discard(key)
         if sid not in self.sessions:
+            if not create:
+                raise PermissionError('Browser session expired. Refresh the page, then try again. Host controls may require signing in again.')
             if len(self.sessions) >= 500:
-                raise f.Failure('Too many sessions; try later.')
+                # Under pressure, reclaim inactive guests, never hosts or recently active guests.
+                for key, value in list(self.sessions.items()):
+                    if not value['host'] and value.get('seen', now) <= now - 5 * 60:
+                        discard(key)
+            if len(self.sessions) >= 500:
+                raise f.Failure('Browser session capacity reached. Please try again after inactive sessions expire.')
             sid = secrets.token_urlsafe(24)
             self.sessions[sid] = {'csrf': secrets.token_urlsafe(24), 'host': False, 'expires': now + 8 * 3600}
+        self.sessions[sid]['seen'] = now
         return sid, self.sessions[sid]
 
     def limit(self, key, count, seconds=60):
@@ -549,6 +564,10 @@ class App(RoomFeatures, LocalPlayback):
         return {'ok': True}
 
 
+STATIC_FILES = {'/legacy': 'legacy.html', '/legacy/': 'legacy.html', '/legacy.js': 'legacy.js', '/legacy.css': 'legacy.css', '/site.webmanifest': 'site.webmanifest', '/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js', '/kiosk.js': 'kiosk.js'}
+STATIC_TYPES = {'legacy.html': 'text/html; charset=utf-8', 'legacy.js': 'text/javascript', 'legacy.css': 'text/css', 'site.webmanifest': 'application/manifest+json', 'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript', 'kiosk.js': 'text/javascript'}
+
+
 def handler(app):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -586,9 +605,32 @@ def handler(app):
                     # Explicit allowed authorities prevent DNS-rebinding requests to arbitrary hosts.
                     if host not in self.server.allowed_hosts:
                         raise PermissionError('Unknown host.')
+                    parsed = urlsplit(self.path)
+                    if not post:
+                        if parsed.path == '/healthz':
+                            self.respond(200, {'ok': True})
+                            return
+                        if parsed.path in STATIC_FILES:
+                            name = STATIC_FILES[parsed.path]
+                            self.respond(200, (Path(__file__).parent / 'web' / name).read_bytes(), STATIC_TYPES[name])
+                            return
+                        if parsed.path == '/api/share':
+                            self.respond(200, {'url': (app.public_url or 'http://' + host) + '/'})
+                            return
+                        if parsed.path == '/api/favorites':
+                            self.respond(200, {'items': app.favorites()})
+                            return
+                        if parsed.path == '/api/playlists':
+                            self.respond(200, {'items': [json.loads(r[0]) for r in app.db.execute('SELECT metadata FROM shared_playlists ORDER BY created,id')]})
+                            return
+                        if parsed.path not in ('/api/state', '/api/search', '/api/stats', '/api/playlist-items',
+                                '/api/host/playlists', '/api/host/devices', '/api/host/spotify-login', '/callback'):
+                            raise LookupError('Not found.')
+                    elif self.headers.get('Origin') != (app.public_url or 'http://' + host):
+                        raise PermissionError('Invalid request origin or session.')
                     cookies = SimpleCookie(self.headers.get('Cookie', ''))
                     old = cookies.get('ft_session')
-                    sid, session = app.session(old.value if old else '')
+                    sid, session = app.session(old.value if old else '', create=not post)
                     guest_cookie = cookies.get('ft_guest')
                     self.guest_token = app.attach_guest(sid, guest_cookie.value if guest_cookie else '')
                     if post:
@@ -609,9 +651,6 @@ def handler(app):
                     else:
                         parsed = urlsplit(self.path)
                         query = parse_qs(parsed.query)
-                        if parsed.path == '/healthz':
-                            self.respond(200, {'ok': True})
-                            return
                         if parsed.path == '/api/host/spotify-login':
                             url = app.oauth_start(session)
                             self.send_response(303)
@@ -624,25 +663,14 @@ def handler(app):
                             app.oauth_finish(session, query)
                             self.respond(200, b'<!doctype html><title>UnicornTunes connected</title><p>Spotify connected. <a href="/host">Return to host desk</a></p>', 'text/html')
                             return
-                        if parsed.path in ('/', '/host', '/app.js', '/style.css', '/site.webmanifest', '/favicon.png', '/foxtunes-logo.png', '/vendor/qrcode.min.js', '/room.js', '/room.css', '/display', '/playlists.js', '/legacy', '/legacy/', '/legacy.js', '/legacy.css'):
-                            name = {'/legacy': 'legacy.html', '/legacy/': 'legacy.html', '/legacy.js': 'legacy.js', '/legacy.css': 'legacy.css', '/site.webmanifest': 'site.webmanifest', '/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js'}[parsed.path]
-                            content = {'legacy.html': 'text/html; charset=utf-8', 'legacy.js': 'text/javascript', 'legacy.css': 'text/css', 'site.webmanifest': 'application/manifest+json', 'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript'}[name]
-                            self.respond(200, (Path(__file__).parent / 'web' / name).read_bytes(), content, sid)
-                            return
                         if parsed.path == '/api/host/playlists':
                             app.limit(('playlists', sid), 30)
                             payload = app.list_playlists(sid, query)
-                        elif parsed.path == '/api/playlists':
-                            payload = {'items': [json.loads(r[0]) for r in app.db.execute('SELECT metadata FROM shared_playlists ORDER BY created,id')]}
                         elif parsed.path == '/api/playlist-items':
                             app.limit(('playlist-items', sid), 30)
                             payload = app.playlist_tracks(sid, query.get('id', [''])[0], int(query.get('offset', ['0'])[0]))
-                        elif parsed.path == '/api/favorites':
-                            payload = {'items': app.favorites()}
                         elif parsed.path == '/api/stats':
                             payload = app.stats(query.get('period', ['tonight'])[0], sid)
-                        elif parsed.path == '/api/share':
-                            payload = {'url': (app.public_url or 'http://' + host) + '/'}
                         elif parsed.path == '/api/state':
                             payload = {'csrf': session['csrf'], 'host': session['host'], 'now': app.now,
                                        'queue': app.queue(sid), 'accepting': app.accepting, 'enabled': app.enabled,

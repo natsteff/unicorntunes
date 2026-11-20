@@ -74,7 +74,7 @@ Anonymous identity is device/cookie based, not account authentication. Different
 
 ## Legacy tablet kiosk
 
-Open `/legacy` on older tablets for a lightweight guest interface with song/artist search, Spotify/local source selection, requests, votes, now playing and the shared queue. **Next guest** starts a fresh guest identity; saving a name labels that identity. Host administration remains at `/host`.
+Open `/legacy` on older tablets for a lightweight guest interface with song/artist search, Spotify/local source selection, requests, votes, now playing and the shared queue. **Kiosk User** is the default name, with an optional **Add your name** control. **Next guest** starts a fresh guest identity. After two minutes without visitor activity, the kiosk clears the name/search and prepares a new identity; requests, votes and historical attribution are retained. Polling does not count as activity, and resets wait for in-flight actions. An unused kiosk does not repeatedly create new identities. The modern `/display` route follows the same visitor behavior; ordinary phone identity behavior is unchanged. Host administration remains at `/host`.
 
 The legacy page uses separate assets, ES5 JavaScript and XMLHttpRequest. It includes Apple Home Screen web-app metadata and avoids modern dialogs. Live updates preserve search text and keyboard focus. Connection failures disable actions while the page reconnects; failed mutations are never automatically replayed. Check the queue before retrying an action after a timeout.
 
@@ -126,7 +126,7 @@ A counted play requires 30 observed seconds or half the duration for short track
 
 SQLite stores requests, votes, guests, playlist selections, favorites and playback history in the persistent volume alongside server configuration. Spotify credentials and the host password are private files there. Protect the volume and its backups.
 
-Run one web server per database. Server restarts expire host sessions but preserve guest identity and stored Spotify authorization. An interrupted Spotify mutation becomes uncertain and requires host reconciliation; UnicornTunes does not blindly retry queue additions. Guest requests are handed off near the current track's end, not with a gapless timing guarantee.
+Run one web server per database. Server restarts expire host sessions but preserve guest identity and stored Spotify authorization. Browser sessions expire after eight hours; guest browser sessions also expire after 30 minutes without API activity. At the 500-session capacity limit, guest sessions inactive for at least five minutes can be reclaimed; active hosts are retained until their normal expiry. Health checks, static pages/assets and public share/favorites/playlist listings do not allocate browser sessions. Session cleanup does not stop music or remove submitted requests/votes. After expiry, refresh to recover a guest session; host controls require signing in again. An interrupted Spotify mutation becomes uncertain and requires host reconciliation; UnicornTunes does not blindly retry queue additions. Guest requests are handed off near the current track's end, not with a gapless timing guarantee.
 
 ## Development and troubleshooting CLI
 

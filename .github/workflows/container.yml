@@ -26,6 +26,8 @@ jobs:
           node --check web/room.js
           node --check web/playlists.js
           node --check web/legacy.js
+          node --check web/kiosk.js
+      - run: node --test tests/test_kiosk.cjs
       - run: python -m unittest discover -s tests -v
       - name: Validate Compose
         run: SPOTIFY_CLIENT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa docker compose config --quiet

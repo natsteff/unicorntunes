@@ -390,11 +390,17 @@ class RoomFeatures(RequestHistory):
         guest = self.guest_id(sid)
         if route == '/api/profile':
             name = str(body.get('name', '')).strip()[:48]
-            self.db.execute('INSERT OR REPLACE INTO guests VALUES(?,?,1)', (guest, name or SHY))
+            kiosk = self.sessions[sid].get('kiosk', False)
+            self.db.execute('INSERT OR REPLACE INTO guests VALUES(?,?,?)',
+                            (guest, name or ('Kiosk User' if kiosk else SHY), int(bool(name) or not kiosk)))
             self.db.commit()
         elif route == '/api/guest/switch':
             # Returning a new token makes switching on a shared tablet distinct from renaming a person.
             token = self.attach_guest(sid, '')
+            self.sessions[sid]['kiosk'] = body.get('kiosk') is True
+            if self.sessions[sid]['kiosk']:
+                self.db.execute('UPDATE guests SET name=?,named=0 WHERE id=?', ('Kiosk User', self.guest_id(sid)))
+                self.db.commit()
             return {'ok': True, '_guest_token': token}
         elif route == '/api/react':
             play = self.db.execute("SELECT id FROM requested_plays WHERE outcome='observing' ORDER BY id DESC LIMIT 1").fetchone()

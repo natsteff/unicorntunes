@@ -32,7 +32,7 @@ class LegacyTests(unittest.TestCase):
 
             try:
                 for path, mime in (('/legacy', 'text/html'), ('/legacy/', 'text/html'),
-                                   ('/legacy.js', 'text/javascript'), ('/legacy.css', 'text/css')):
+                                   ('/legacy.js', 'text/javascript'), ('/legacy.css', 'text/css'), ('/kiosk.js', 'text/javascript')):
                     with kiosk.open(base + path) as response:
                         self.assertEqual(response.status, 200)
                         self.assertIn(mime, response.headers['Content-Type'])
@@ -45,6 +45,8 @@ class LegacyTests(unittest.TestCase):
                     self.assertIn('/app.js', response.read().decode())
                 state = api(kiosk, '/api/state')
                 csrf = state['csrf']
+                api(kiosk, '/api/guest/switch', {'kiosk': True}, csrf)
+                self.assertEqual(api(kiosk, '/api/state')['profile'], {'name': 'Kiosk User', 'named': False})
                 api(kiosk, '/api/profile', {'name': 'Kiosk guest'}, csrf)
                 found = api(kiosk, '/api/search?q=test&source=spotify&offset=0')
                 self.assertEqual(found['items'][0]['uri'], A)

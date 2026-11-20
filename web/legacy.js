@@ -3,7 +3,24 @@
     'use strict';
     var state = null, csrf = '', online = false, polling = false, changing = false;
     var searching = false, results = [], offset = 0, searchText = '', searchSource = 'all';
-    var more = false, searchGeneration = 0;
+    var more = false, searchGeneration = 0, kiosk;
+    kiosk = window.createKioskSession({
+        isBusy: function () { return changing || searching || polling; },
+        reset: function (done) {
+            changing = true; syncControls();
+            api('/api/guest/switch', {kiosk: true}, function (error) { changing = false; done(error); });
+        },
+        onReset: function () {
+            searchGeneration += 1; results = []; more = false; offset = 0;
+            $('guest-input').value = ''; $('query').value = ''; $('source').value = 'all';
+            $('name-form').hidden = true; $('search-status').textContent = ''; $('pages').hidden = true;
+            $('guest').textContent = 'Preparing Kiosk User…'; clear($('results')); clear($('queue')); clear($('now'));
+            if (document.activeElement && document.activeElement.blur) { document.activeElement.blur(); }
+            notice('Preparing the kiosk for the next guest…'); syncControls();
+        },
+        onReady: function () { notice('Ready. Search now, or optionally add your name.'); refresh(); },
+        onError: function (error) { notice(error + ' Reconnecting before accepting another request.'); syncControls(); refresh(); }
+    });
     function $(id) { return document.getElementById(id); }
     function node(tag, text) { var n = document.createElement(tag); if (text !== undefined) { n.textContent = text; } return n; }
     function clear(n) { while (n.firstChild) { n.removeChild(n.firstChild); } }
@@ -31,8 +48,9 @@
         xhr.send(body === null ? null : JSON.stringify(body));
     }
     function syncControls() {
-        var disabled = !online || changing;
+        var disabled = !online || changing || !kiosk.isReady();
         $('save-name').disabled = disabled;
+        $('add-name').disabled = disabled;
         $('switch-guest').disabled = disabled;
         $('search-button').disabled = disabled || searching;
         $('previous').disabled = disabled || searching || offset === 0;
@@ -43,11 +61,11 @@
         }
     }
     function mutation(path, body, after) {
-        if (!online || changing) { return; }
+        if (!online || changing || !kiosk.isReady()) { return; }
         changing = true; syncControls(); notice('Saving…');
         api(path, body, function (error) {
             changing = false;
-            if (error) { notice(error); } else { notice('Saved.'); if (after) { after(); } }
+            if (error) { notice(error); } else { kiosk.activity(); notice('Saved.'); if (after) { after(); } }
             /* Never replay a mutation: a lost response may have succeeded. */
             online = false; syncControls(); refresh();
         });
@@ -123,13 +141,13 @@
             } else {
                 state = data; csrf = data.csrf; online = true;
                 $('connection').textContent = 'Connected · live updates' + (data.handoff && data.handoff.stale ? ' · player status is stale' : '') + (data.error ? ' · ' + data.error : '');
-                render();
+                if (kiosk.ensure(csrf)) { render(); }
             }
             syncControls();
         });
     }
     function search() {
-        if (searching || !online || changing) { return; }
+        if (searching || !online || changing || !kiosk.isReady()) { return; }
         searching = true; syncControls(); $('search-status').textContent = 'Searching…';
         var generation = searchGeneration;
         api('/api/search?q=' + encodeURIComponent(searchText) + '&source=' + encodeURIComponent(searchSource) + '&offset=' + offset, null, function (error, data) {
@@ -153,16 +171,11 @@
     $('previous').onclick = function () { if (!searching && offset > 0) { offset = Math.max(0, offset - 10); search(); } };
     $('next').onclick = function () { if (!searching && more && offset < 990) { offset += 10; search(); } };
     $('name-form').onsubmit = function (event) {
-        event.preventDefault(); mutation('/api/profile', {name: $('guest-input').value}, function () { $('guest-input').value = ''; });
+        event.preventDefault(); mutation('/api/profile', {name: $('guest-input').value}, function () { $('guest-input').value = ''; $('name-form').hidden = true; });
     };
-    $('switch-guest').onclick = function () {
-        mutation('/api/guest/switch', {}, function () {
-            searchGeneration += 1; results = []; more = false; offset = 0;
-            $('guest-input').value = ''; $('query').value = ''; $('search-status').textContent = ''; $('pages').hidden = true;
-            notice('Ready for the next guest. Enter a name, or request anonymously.');
-            clear($('results'));
-        });
-    };
+    $('switch-guest').onclick = function () { kiosk.next(); };
+    $('add-name').onclick = function () { $('name-form').hidden = false; $('guest-input').focus(); };
+    $('cancel-name').onclick = function () { $('name-form').hidden = true; $('guest-input').value = ''; };
     window.addEventListener('pageshow', refresh, false);
     document.addEventListener('visibilitychange', function () { if (!document.hidden) { refresh(); } }, false);
     window.setInterval(function () { if (!document.hidden) { refresh(); } }, 5000);
