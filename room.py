@@ -207,7 +207,6 @@ class RoomFeatures(RequestHistory):
         guest = self.guest_id(sid)
         if self.db.execute("SELECT count(*) FROM songs WHERE guest=? AND state='waiting'", (guest,)).fetchone()[0] >= 3:
             raise f.Failure('You can have up to three waiting requests.')
-        was_empty = not self.db.execute("SELECT 1 FROM songs WHERE state IN ('waiting','sending','accepted','queued','uncertain','playing')").fetchone()
         gathering = self.meta('gathering')
         first = not self.db.execute("SELECT 1 FROM songs WHERE guest=? AND gathering=? AND state!='removed'", (guest, gathering)).fetchone()
         name = self.guest_name(guest)
@@ -216,9 +215,7 @@ class RoomFeatures(RequestHistory):
                                   (guest, uri, json.dumps(song), time.time(), name, gathering, first))
             self.db.execute('INSERT INTO votes(song,guest,voter_name,created) VALUES(?,?,?,?)', (row.lastrowid, guest, name, time.time()))
         self.reserve_next()
-        if was_empty:
-            self.set_meta('immediate_request',row.lastrowid)
-            self.next_poll=0
+        self.next_poll = 0
 
     def vote(self, sid, song):
         row = self.db.execute('SELECT state FROM songs WHERE id=?', (song,)).fetchone()
@@ -238,7 +235,10 @@ class RoomFeatures(RequestHistory):
         from web_server import track
         try:
             data = self.api.call('/me/player/queue')
-            self.spotify_upcoming = {'items': [track(x) for x in data.get('queue', [])[:20]], 'updated': time.time(), 'error': ''}
+            items = [track(x) for x in data.get('queue', [])[:20]]
+            repeated = len(items) > 1 and len({x.get('uri') for x in items}) == 1
+            self.spotify_upcoming = {'items': items, 'updated': time.time(), 'error': '',
+                                     'warning': 'Spotify reports the same track repeatedly. This snapshot does not prove repeat mode or actual playback order.' if repeated else ''}
         except f.Failure as error:
             self.spotify_upcoming['error'] = str(error)
 
@@ -379,7 +379,7 @@ class RoomFeatures(RequestHistory):
             owner = self.db.execute("SELECT s.requested_by FROM songs s JOIN request_attempts a ON a.song=s.id WHERE s.uri=? AND s.state='playing' AND a.confirmed=1 ORDER BY s.id DESC LIMIT 1", (now['uri'],)).fetchone()
             if owner:
                 now['requested_by'] = owner[0] or SHY
-        return {'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
+        return {'background_music': self.background_state() if self.sessions.get(sid, {}).get('host') else None, 'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
                 'local_player': dict(self.local_config, count=self.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0]) if self.sessions.get(sid, {}).get('host') else None,
                 'room': self.room, 'version': os.environ.get('UNICORNTUNES_VERSION', '0.3.0-dev'),
                 'spotify_upcoming': self.spotify_upcoming, 'play_id': current['id'] if current else None,

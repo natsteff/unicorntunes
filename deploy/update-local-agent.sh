@@ -10,9 +10,9 @@ agent_tmp="$(mktemp "$agent_dir/.mpd-agent.XXXXXX")"
 loudness_tmp="$(mktemp "$agent_dir/.loudness.XXXXXX")"
 health_tmp="$(mktemp "$agent_dir/.health.XXXXXX")"
 trap 'rm -f "$agent_tmp" "$loudness_tmp" "$health_tmp"' EXIT
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.7.0/mpd_agent.py -o "$agent_tmp"
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.7.0/local_loudness.py -o "$loudness_tmp"
-curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.7.0/player_health.py -o "$health_tmp"
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.8.0/mpd_agent.py -o "$agent_tmp"
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.8.0/local_loudness.py -o "$loudness_tmp"
+curl -fL https://raw.githubusercontent.com/natsteff/unicorntunes/v0.8.0/player_health.py -o "$health_tmp"
 python3 -c 'import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]' "$agent_tmp" "$loudness_tmp" "$health_tmp"
 # Ask an old copy-rendering job to stop at its next safe checkpoint. Never stop audio services.
 python3 - <<'PY_CANCEL'

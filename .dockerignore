@@ -11,3 +11,5 @@
 !local_loudness.py
 !request_history.py
 !player_health.py
+
+!background_playback.py

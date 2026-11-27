@@ -98,7 +98,7 @@ def image_type(raw):
 
 def execute(mpd,request):
     action=request.get('action')
-    if action not in ('library','status','play','pause','stop','scan','picture','volume','loudness_status','loudness_start','loudness_cancel','loudness_check','soloist_status','soloist_restart'):raise ValueError('Unknown action')
+    if action not in ('library','status','play','pause','resume','stop','scan','picture','volume','loudness_status','loudness_start','loudness_cancel','loudness_check','soloist_status','soloist_restart'):raise ValueError('Unknown action')
     if action in ('soloist_status','soloist_restart'):
         import player_health
         return player_health.soloist_status() if action=='soloist_status' else player_health.restart_soloist()
@@ -122,7 +122,7 @@ def execute(mpd,request):
         import local_loudness as loudness
         matched=loudness.playback_record(uri,status.get('songid'))
         if matched and str(matched.get('volume'))!=str(status.get('volume')):matched=None
-        return {'agent_version':6,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
+        return {'agent_version':7,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
                 'progress_ms':round(float(status.get('elapsed',0))*1000),
                 'duration_ms':round(float(status.get('duration',0))*1000),'volume':status.get('volume'),
                 'error':status.get('error',''),'normalized':bool(matched),'legacy_copy':bool(normalized),'volume_plan':matched,'updating':bool(status.get('updating_db'))}
@@ -169,6 +169,7 @@ def execute(mpd,request):
         if plan:loudness.remember_playback(uri,song_id,plan)
         return {'song_id':song_id,'uri':uri,'volume':volume,'plan':plan}
     if action=='pause':mpd.command('pause',1)
+    if action=='resume':mpd.command('pause',0)
     if action=='stop':mpd.command('stop')
     return {'ok':True}
 

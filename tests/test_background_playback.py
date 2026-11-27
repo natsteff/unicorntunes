@@ -1,0 +1,202 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import foxtunes as f
+import mpd_agent
+import web_server as w
+from background_playback import context_uri
+import test_mixed_playback as fixtures
+import test_queue_completion as completion
+A = completion.A
+
+CONTEXT = 'spotify:playlist:' + 'p'*22
+
+
+class BackgroundTests(unittest.TestCase):
+    setUp = completion.QueueCompletionTests.setUp
+    tearDown = completion.QueueCompletionTests.tearDown
+    owned = completion.QueueCompletionTests.owned
+
+    def save_background(self):
+        self.app.set_meta('background_context', {'uri':CONTEXT, 'device':'speaker', 'explicit':True})
+
+    def finish_request(self):
+        self.owned(A)
+        self.app.arm_background()
+        self.spotify.state['progress_ms'] = 59000
+        self.app.poll(True)
+        self.spotify.state.update(is_playing=False, progress_ms=0)
+        # Spotify can retain the original seed rather than the last queued track.
+        self.spotify.state['item'] = dict(self.spotify.state['item'], uri=fixtures.SPOTIFY)
+        self.events.clear()
+        with patch('web_server.time.time', return_value=self.app.updated+2):
+            self.app.poll(True)
+
+    def test_restores_context_once_after_last_observed_request_end(self):
+        self.save_background()
+        self.finish_request()
+        writes = [e for e in self.events if e[0]=='spotify' and e[2]!='GET']
+        self.assertEqual([e[3] for e in writes], [{'context_uri':CONTEXT}])
+        self.assertFalse(self.app.background_armed)
+        self.app.poll(True)
+        self.assertEqual(len([e for e in self.events if e[0]=='spotify' and e[2]!='GET']), 1)
+
+    def test_background_acceptance_requires_observed_context_and_times_out(self):
+        self.save_background()
+        self.finish_request()
+        self.assertIsNotNone(self.app.background_pending)
+        self.assertFalse(self.app.verify_background(self.spotify.state))
+        self.spotify.state['context']={'uri':CONTEXT}
+        self.assertTrue(self.app.verify_background(self.spotify.state))
+        self.assertIsNone(self.app.background_pending)
+        self.app.background_pending={'uri':CONTEXT,'device':'speaker','deadline':0}
+        self.spotify.state['context']=None
+        self.app.poll(True)
+        self.assertFalse(self.app.enabled)
+        self.assertIn('not confirmed',self.app.reason)
+
+    def test_missing_context_explains_idle_without_replaying_seed(self):
+        self.finish_request()
+        self.assertIn('Choose background music', self.app.background_message)
+        self.assertFalse(any(e[0]=='spotify' and e[2]!='GET' for e in self.events))
+        self.assertTrue(self.app.idle_ready)
+
+    def test_capture_real_context_before_first_request_changes_it(self):
+        self.spotify.state['context'] = {'uri':CONTEXT}
+        self.app.submit(self.sid,A)
+        self.app.poll(True)
+        self.assertEqual(self.app.meta('background_context')['uri'], CONTEXT)
+        self.assertTrue(self.app.background_armed)
+
+    def test_never_captures_request_context_or_other_device(self):
+        self.owned(A)
+        self.spotify.state['context'] = {'uri':CONTEXT}
+        self.app.capture_background(self.spotify.state)
+        self.assertEqual(self.app.meta('background_context',{}), {})
+        self.app.db.execute("UPDATE songs SET state='past'")
+        self.app.db.commit()
+        self.spotify.state['device'] = {'id':'other'}
+        self.app.capture_background(self.spotify.state)
+        self.assertEqual(self.app.meta('background_context',{}), {})
+
+    def test_restore_refuses_wrong_device_pending_requests_and_midtrack_pause(self):
+        self.save_background()
+        self.app.arm_background()
+        self.app.idle_ready=True
+        self.spotify.state.update(is_playing=False,device={'id':'other'})
+        self.app.restore_background(self.spotify.state)
+        self.assertFalse(self.events)
+        self.spotify.state['device']={'id':'speaker'}
+        self.app.submit(self.sid,A)
+        self.app.restore_background(self.spotify.state)
+        self.assertFalse(self.events)
+        self.app.db.execute("UPDATE songs SET state='past'")
+        self.app.db.commit()
+        self.app.idle_ready=False
+        self.app.restore_background(self.spotify.state)
+        self.assertFalse(self.events)
+
+    def test_host_stop_and_server_restart_disarm_automatic_restoration(self):
+        self.save_background()
+        self.app.arm_background()
+        self.app.idle_ready=True
+        self.app.action(self.sid,'/api/host/stop',{})
+        self.assertFalse(self.app.background_armed)
+        self.app.restore_background({})
+        self.assertFalse(self.events)
+        self.app.db.close()
+        self.app=w.App(self.path,self.spotify)
+        self.assertEqual(self.app.meta('background_context')['uri'],CONTEXT)
+        self.assertFalse(self.app.enabled)
+        self.assertFalse(self.app.background_armed)
+
+    def test_restore_failure_is_not_retried(self):
+        self.save_background()
+        self.app.arm_background()
+        self.app.idle_ready=True
+        self.spotify.state.update(is_playing=False)
+        original=self.spotify.call
+        def call(path,method='GET',payload=None,params=None):
+            if method=='PUT':raise f.Failure('Forbidden')
+            return original(path,method,payload,params)
+        with patch.object(self.spotify,'call',side_effect=call) as mocked:
+            with self.assertRaises(f.Failure):self.app.restore_background(self.spotify.state)
+            self.app.restore_background(self.spotify.state)
+            self.assertEqual(sum(c.kwargs.get('method')=='PUT' or len(c.args)>1 and c.args[1]=='PUT' for c in mocked.call_args_list),1)
+
+    def test_local_finish_restores_only_after_verified_mpd_stop(self):
+        self.save_background()
+        self.app.local_config.update(enabled=True,device='speaker')
+        self.app.db.execute('INSERT INTO local_tracks VALUES(?,?)',(fixtures.LOCAL,json.dumps(fixtures.SONG)))
+        self.app.db.commit()
+        self.app.submit(self.sid,fixtures.LOCAL)
+        self.app.poll(True)
+        self.app.local.state['progress_ms']=59000
+        self.app.poll(True)
+        self.app.local.state['state']='stop'
+        self.events.clear()
+        self.app.poll(True)
+        self.assertTrue(any(e[0]=='spotify' and e[3]=={'context_uri':CONTEXT} for e in self.events if len(e)>3))
+        self.assertIsNone(self.app.local_active)
+
+    def test_resume_audio_does_not_enable_handoff_or_replace_track(self):
+        self.spotify.state['is_playing']=False
+        self.app.action(self.sid,'/api/host/resume',{})
+        writes=[e for e in self.events if e[0]=='spotify' and e[2]!='GET']
+        self.assertEqual([e[3] for e in writes],[{}])
+        self.assertFalse(self.app.enabled)
+        self.assertGreater(self.app.quick_poll_until,0)
+
+    def test_resume_refuses_other_device_and_guest(self):
+        self.spotify.state.update(is_playing=False,device={'id':'other'})
+        with self.assertRaises(f.Failure):self.app.action(self.sid,'/api/host/resume',{})
+        self.assertFalse(any(e[0]=='spotify' and e[2]!='GET' for e in self.events))
+        guest,_=self.app.session('')
+        for route in ('resume','background'):
+            with self.assertRaises(PermissionError):self.app.action(guest,'/api/host/'+route,{})
+
+    def test_background_choice_validates_uri_and_does_not_start_audio(self):
+        self.app.action(self.sid,'/api/host/background',{'uri':'https://open.spotify.com/playlist/'+'p'*22+'?si=x','device':'speaker'})
+        self.assertEqual(self.app.meta('background_context')['uri'],CONTEXT)
+        self.assertFalse(self.events)
+        for value in ('https://example.com/playlist/x','spotify:track:'+'a'*22,'https://open.spotify.com/playlist/x'):
+            with self.assertRaises(f.Failure):context_uri(value)
+
+    def test_repeated_snapshot_warns_without_inventing_or_removing_entries(self):
+        with patch.object(self.spotify,'call',return_value={'queue':[self.spotify.state['item']]*4}):
+            self.app.refresh_upcoming()
+        self.assertEqual(len(self.app.spotify_upcoming['items']),4)
+        self.assertIn('same track repeatedly',self.app.spotify_upcoming['warning'])
+
+    def test_local_resume_checks_agent_and_preserves_owned_item(self):
+        self.app.local_config.update(enabled=True,device='speaker')
+        self.app.db.execute('INSERT INTO local_tracks VALUES(?,?)',(fixtures.LOCAL,json.dumps(fixtures.SONG)))
+        self.app.db.commit()
+        self.app.submit(self.sid,fixtures.LOCAL)
+        self.app.poll(True)
+        self.app.local.state.update(state='pause',agent_version=6)
+        with self.assertRaisesRegex(f.Failure,'agent 7'):
+            self.app.action(self.sid,'/api/host/resume',{})
+        self.assertNotIn(('mpd','resume'),self.events)
+        self.app.local.state['agent_version']=7
+        self.app.action(self.sid,'/api/host/resume',{})
+        self.assertIn(('mpd','resume'),self.events)
+        self.assertFalse(self.app.enabled)
+        self.assertEqual(self.app.local_active['uri'],fixtures.LOCAL)
+
+    def test_agent_resume_is_bounded_and_does_not_replace_the_queue(self):
+        mpd=Mock()
+        mpd_agent.execute(mpd,{'action':'resume'})
+        mpd.command.assert_called_once_with('pause',0)
+
+    def test_api_error_identifies_operation_without_query_or_token(self):
+        with tempfile.TemporaryDirectory() as temp:
+            api=f.Spotify(Path(temp))
+            with patch.object(api,'token',return_value='secret-token'),patch('foxtunes.request_json',side_effect=f.Failure('Spotify HTTP 403.')):
+                with self.assertRaisesRegex(f.Failure,'PUT /me/player/repeat: Spotify HTTP 403') as error:
+                    api.call('/me/player/repeat','PUT',params={'device_id':'private-device'})
+            self.assertNotIn('secret',str(error.exception))
+            self.assertNotIn('private-device',str(error.exception))

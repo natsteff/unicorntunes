@@ -43,6 +43,54 @@ class QueueCompletionTests(unittest.TestCase):
         self.app.poll(True)
         self.assertEqual(self.app.db.execute('SELECT song FROM plays').fetchone()[0],1)
 
+    def test_stale_playing_row_does_not_block_background_interruption(self):
+        self.owned()
+        self.app.submit(self.sid, A)  # Submitted before the next poll retires ownership.
+        self.spotify.state['item'] = dict(self.spotify.state['item'], uri='spotify:track:'+'z'*22)
+        self.events.clear()
+        self.app.poll(True)
+        writes = [e for e in self.events if e[0]=='spotify' and e[2]!='GET']
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][1], '/me/player/play')
+        self.app.poll(True)
+        self.assertEqual(len([e for e in self.events if e[0]=='spotify' and e[2]!='GET']), 1)
+
+    def test_existing_waiting_request_without_marker_starts_over_background(self):
+        self.app.submit(self.sid, A)
+        self.app.set_meta('immediate_request', None)
+        self.app.poll(True)
+        self.assertTrue(any(e[:3]==('spotify','/me/player/play','PUT') for e in self.events))
+
+    def test_unresolved_handoff_blocks_background_interruption(self):
+        self.app.submit(self.sid, fixtures.SPOTIFY)
+        self.app.db.execute("UPDATE songs SET state='uncertain'")
+        self.app.db.commit()
+        self.app.submit(self.sid, A)
+        self.app.poll(True)
+        self.assertFalse(any(e[0]=='spotify' and e[2]!='GET' for e in self.events))
+
+    def test_stale_spotify_ownership_allows_local_request_without_overlap(self):
+        self.owned()
+        self.app.local_config.update(enabled=True, device='speaker')
+        self.app.db.execute('INSERT INTO local_tracks VALUES(?,?)',
+                            (fixtures.LOCAL, json.dumps(fixtures.SONG)))
+        self.app.db.commit()
+        self.app.submit(self.sid, fixtures.LOCAL)
+        self.spotify.state['item'] = dict(self.spotify.state['item'], uri=A)
+        self.app.poll(True)
+        self.assertIn(('mpd', 'play'), self.events)
+        self.assertFalse(self.spotify.state['is_playing'])
+
+    def test_waiting_request_after_server_restart_never_dispatches_automatically(self):
+        self.app.submit(self.sid, A)
+        f.private_write(self.path/'settings.json', {'device':'speaker', 'accepting':True})
+        self.app.db.close()
+        self.app = w.App(self.path, self.spotify)
+        self.events.clear()
+        self.app.poll(True)
+        self.assertFalse(self.app.enabled)
+        self.assertFalse(any(e[0]=='spotify' and e[2]!='GET' for e in self.events))
+
     def test_first_local_request_interrupts_background_without_overlap(self):
         self.app.local_config.update(enabled=True,device='speaker')
         self.app.db.execute('INSERT INTO local_tracks VALUES(?,?)',(fixtures.LOCAL,json.dumps(fixtures.SONG)));self.app.db.commit()

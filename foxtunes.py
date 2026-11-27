@@ -92,8 +92,12 @@ class Spotify:
         url = 'https://api.spotify.com/v1' + path
         if params:
             url += '?' + urllib.parse.urlencode(params)
-        return request_json(url, method, json.dumps(payload).encode() if payload is not None else None,
-                            {'Authorization': 'Bearer ' + self.token(), 'Content-Type': 'application/json'})
+        try:
+            return request_json(url, method, json.dumps(payload).encode() if payload is not None else None,
+                                {'Authorization': 'Bearer ' + self.token(), 'Content-Type': 'application/json'})
+        except Failure as error:
+            # Fixed API path only: no query, account ID, token or response body.
+            raise Failure(method + ' ' + path + ': ' + str(error), uncertain=error.uncertain) from error
 
 
 class Ledger:

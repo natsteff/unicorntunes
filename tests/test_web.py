@@ -83,13 +83,17 @@ class WebTests(unittest.TestCase):
         for sid, uri in zip(self.sessions, (A, B, C)):
             self.app.submit(sid, uri)
         self.app.vote(self.sessions[1], 3)
-        self.app.set_meta('immediate_request',None)  # This case exercises near-end queue insertion.
+        # Exercise near-end queue insertion behind an existing requested song.
+        self.app.db.execute("INSERT INTO songs(uri,metadata,state) VALUES(?,?,'playing')",
+                            (self.api.state['item']['uri'], '{}'))
+        self.app.db.commit()
         self.app.poll(True)
         self.assertFalse(any(c[1] != 'GET' for c in self.api.calls))
         self.app.device, self.app.enabled = 'speaker', True
         self.app.poll(True)
         writes = [c for c in self.api.calls if c[1] != 'GET']
         self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][0], '/me/player/queue')
         self.assertEqual(writes[0][2]['uri'], A)
         self.app.poll(True)
         self.assertEqual(len([c for c in self.api.calls if c[1] != 'GET']), 1)
@@ -109,7 +113,10 @@ class WebTests(unittest.TestCase):
 
     def test_paused_and_not_near_end_do_not_dispatch(self):
         self.app.submit(self.sessions[0], A)
-        self.app.set_meta('immediate_request',None)  # Exercise an existing waiting queue, not first background arrival.
+        # An owned requested song must retain its turn, even with waiting requests.
+        self.app.db.execute("INSERT INTO songs(uri,metadata,state) VALUES(?,?,'playing')",
+                            (self.api.state['item']['uri'], '{}'))
+        self.app.db.commit()
         self.app.enabled, self.app.device = True, 'speaker'
         self.api.state['progress_ms'] = 1000
         self.app.poll(True)

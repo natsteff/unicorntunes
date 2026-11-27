@@ -294,6 +294,8 @@ class LocalPlayback:
         if status.get('state') in ('play', 'pause'):
             raise f.Failure('MPD has another active track. Stop it before starting local playback.')
         if status.get('error'): raise f.Failure('MPD reports an error: ' + status['error'])
+        self.capture_background(spotify)
+        self.arm_background()
         self.check_rules(row)
         normalized=self.local_config.get('normalization_enabled',False)
         if normalized and not self.local.call('loudness_check',uri=row['uri'],target=self.local_config.get('loudness_target',-14),reference=self.local_config.get('normalized_volume',100)).get('ready'):
@@ -395,7 +397,7 @@ class LocalPlayback:
         if self.enabled:
             next_row = next((r for r in self.queue('') if r['state']=='waiting'),None)
             if next_row: self.start_idle_request(next_row)
-        # With no requests, remain idle. The next request starts on its own source.
+            else: self.restore_background(spotify)
     def skip_mixed_request(self):
         pending = self.db.execute("SELECT id FROM songs WHERE state IN ('accepted','queued')").fetchall()
         if any(not self.local_active or r['id'] != self.local_active['id'] for r in pending):

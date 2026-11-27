@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit, urlencode
 import foxtunes as f
 from room import RoomFeatures
 from local_player import LocalPlayback
+from background_playback import BackgroundPlayback
 
 
 def track(item):
@@ -60,7 +61,7 @@ def search_options(query):
     return ' '.join(parts), title.casefold() if exact else None
 
 
-class App(RoomFeatures, LocalPlayback):
+class App(RoomFeatures, LocalPlayback, BackgroundPlayback):
     def __init__(self, data=f.DATA, api=None):
         self.data, self.api = data, api or f.Spotify(data)
         data.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -95,6 +96,8 @@ class App(RoomFeatures, LocalPlayback):
             if existing.get('client_id') not in (None, client) and (data / 'tokens.json').exists():
                 raise ValueError('Disconnect Spotify before changing its client ID.')
             f.private_write(data / 'config.json', {'client_id': client})
+        self.background_armed, self.background_message, self.quick_poll_until = False, "", 0
+        self.background_pending = None
         self.last_poll, self.next_poll = 0, 0
         hostfile = data / 'web-host.json'
         if not hostfile.exists():
@@ -157,7 +160,10 @@ class App(RoomFeatures, LocalPlayback):
         elapsed = time.time() - self.updated if self.updated else float('inf')
         progress = state.get('progress_ms') or 0
         ended_position = not item or progress == 0 or (duration and progress >= duration - 1000)
-        same_track = not item or item.get('uri') == previous.get('uri')
+        owned_previous = self.db.execute("SELECT 1 FROM songs s JOIN request_attempts a ON a.song=s.id WHERE s.uri=? AND s.state='playing' AND a.confirmed=1 AND a.device=?", (previous.get('uri'), self.device)).fetchone()
+        # A standalone request list can expose its original seed again after
+        # the last queued track ends. Accept only a fresh observed owned end.
+        same_track = not item or item.get('uri') == previous.get('uri') or bool(owned_previous and progress == 0)
         if (self.enabled and previous.get('playing') and duration and 0 <= remaining <= 15000
                 and getattr(self, 'observed_device', None) == self.device and self.device
                 and 0 <= elapsed <= 30 and elapsed + 1 >= remaining / 1000
@@ -171,6 +177,7 @@ class App(RoomFeatures, LocalPlayback):
         if row['uri'].startswith('local:'):
             return self.start_local_request(row, self.api.call('/me/player'))
         self.check_rules(row)
+        self.arm_background()
         if self.local_bound() and self.local.call('status').get('state') in ('play', 'pause'):
             raise f.Failure('MPD is still active. Spotify was not started; check the local player.')
         self.commit_selection(row['id'])
@@ -189,7 +196,7 @@ class App(RoomFeatures, LocalPlayback):
     def poll(self, force=False):
         if not force and time.monotonic() < self.next_poll:
             return
-        self.next_poll = time.monotonic() + (5 if self.enabled else 20)
+        self.next_poll = time.monotonic() + (1 if time.monotonic() < self.quick_poll_until else 5 if self.enabled else 20)
         try:
             if self.local_active:
                 self.poll_local()
@@ -205,6 +212,9 @@ class App(RoomFeatures, LocalPlayback):
             actual = (state.get('device') or {}).get('id')
             self.observed_device = actual
             self.now = dict(track(item), playing=bool(state.get('is_playing')), progress_ms=state.get('progress_ms', 0)) if item else None
+            if not self.verify_background(state):
+                return
+            self.capture_background(state)
             pending = self.db.execute("SELECT * FROM songs WHERE state IN ('sending','accepted','queued','uncertain') ORDER BY id LIMIT 1").fetchone()
             if pending:self.confirm_attempt(state,pending)
             self.db.execute("UPDATE songs SET state='past', detail='No longer current; completion unverified' WHERE state='playing' AND uri!=?", (item.get('uri', ''),))
@@ -217,18 +227,20 @@ class App(RoomFeatures, LocalPlayback):
                 raise f.Failure('Selected Spotify player is unavailable. Check player health, then refresh devices and start the session.' if not actual else 'Spotify playback moved to another device. Handoff stopped; choose a player and start the session again.')
             if self.db.execute("SELECT id FROM songs WHERE state IN ('sending','accepted','queued','uncertain')").fetchone():
                 return
-            immediate=self.meta('immediate_request')
             row=next((r for r in self.queue('') if r['state']=='waiting'),None)
-            if immediate and row and row['id']==immediate and state.get('is_playing'):
+            # Decide from this poll's verified playback, not a submission-time
+            # empty-queue snapshot: stale playing rows may have just been retired.
+            if row and item.get('uri') and state.get('is_playing'):
                 protected=self.db.execute("SELECT 1 FROM songs WHERE state='playing' AND uri=?",(item.get('uri'),)).fetchone()
                 if not protected:
-                    self.set_meta('immediate_request',None)
                     self.start_idle_request(row)
                     return
             if self.idle_ready:
                 row = next((r for r in self.queue('') if r['state'] == 'waiting'), None)
                 if row:
                     self.start_idle_request(row)
+                else:
+                    self.restore_background(state)
                 return
             next_row = next((r for r in self.queue('') if r['state']=='waiting'), None)
             remaining = (previous.get('duration_ms') or 0) - (previous.get('progress_ms') or 0)
@@ -252,6 +264,7 @@ class App(RoomFeatures, LocalPlayback):
                 return
             self.check_rules(row)
             self.commit_selection(row['id'])
+            self.arm_background()
             self.record_attempt(row,'queued')
             self.db.execute("UPDATE songs SET state='sending' WHERE id=?", (row['id'],))
             self.db.commit()
@@ -276,6 +289,7 @@ class App(RoomFeatures, LocalPlayback):
         return {'status': status, 'reason': self.reason, 'idle': self.enabled and self.idle_ready, 'stale': not self.updated or time.time()-self.updated>45,
                 'accepting': self.accepting, 'error': self.error,
                 'player_active': bool(self.now),
+                'background_message': self.background_message,
                 'recovery': ('Reconnect Spotify from the host desk.' if any(x in self.error.lower() for x in ('token','authoriz','401','login')) else
                              'Refresh devices and start the session on an available player.') if self.error or (not self.now and not (self.enabled and self.idle_ready)) else ''}
 
@@ -312,6 +326,8 @@ class App(RoomFeatures, LocalPlayback):
 
     def start_session(self, device, accepting):
         self.enabled = False
+        self.background_armed = False
+        self.background_pending = None
         if self.db.execute("SELECT id FROM songs WHERE state IN ('sending','uncertain')").fetchone():
             raise f.Failure('Reconcile the uncertain handoff before starting a session.')
         devices = self.api.call('/me/player/devices').get('devices', [])
@@ -347,6 +363,10 @@ class App(RoomFeatures, LocalPlayback):
                 time.sleep(0.5)
             if (observed.get('device') or {}).get('id') != device:
                 raise f.Failure('Spotify accepted the transfer but the player has not become active. Handoff remains stopped; try Start again after checking player status.')
+            previous_device = self.device
+            self.device = device
+            self.capture_background(observed)
+            self.device = previous_device
             seed = None
             if not observed.get('is_playing'):
                 if observed.get('item'):
@@ -361,6 +381,7 @@ class App(RoomFeatures, LocalPlayback):
                         raise f.Failure('Spotify state changed during startup. Start again to begin the local request safely.')
                     self.check_rules(seed)
                     self.commit_selection(seed['id'])
+                    self.arm_background()
                     self.record_attempt(seed,'direct',device)
                     self.db.execute("UPDATE songs SET state='sending' WHERE id=?", (seed['id'],))
                     self.db.commit()
@@ -372,8 +393,10 @@ class App(RoomFeatures, LocalPlayback):
                         raise
                     self.db.execute("UPDATE songs SET state='accepted' WHERE id=?", (seed['id'],))
                     self.db.commit()
-            self.api.call('/me/player/shuffle', 'PUT', params={'state': 'false', 'device_id': device})
-            self.api.call('/me/player/repeat', 'PUT', params={'state': 'off', 'device_id': device})
+            if observed.get('shuffle_state') is not False:
+                self.api.call('/me/player/shuffle', 'PUT', params={'state': 'false', 'device_id': device})
+            if observed.get('repeat_state') != 'off':
+                self.api.call('/me/player/repeat', 'PUT', params={'state': 'off', 'device_id': device})
             for attempt in range(4):
                 observed = self.api.call('/me/player')
                 valid = ((observed.get('device') or {}).get('id') == device and observed.get('is_playing')
@@ -393,6 +416,9 @@ class App(RoomFeatures, LocalPlayback):
             if seed and (observed.get('item') or {}).get('uri') == seed['uri']:
                 self.confirm_attempt(observed,dict(seed,state='accepted'))
             self.observe_play(observed)
+            if self.db.execute("SELECT 1 FROM songs WHERE state IN ('playing','accepted','queued')").fetchone():
+                self.arm_background()
+            self.request_playback_refresh()
         except (f.Failure, OSError) as error:
             self.reason = 'Session start needs attention: ' + (str(error) if isinstance(error, f.Failure) else 'Could not save configuration.')
             self.error = self.reason
@@ -431,6 +457,8 @@ class App(RoomFeatures, LocalPlayback):
             if chosen and not pending:
                 self.check_rules(chosen)
                 self.commit_selection(chosen['id'])
+                self.capture_background(before)
+                self.arm_background()
                 self.record_attempt(chosen,'direct')
                 self.db.execute("UPDATE songs SET state='sending' WHERE id=?", (chosen['id'],))
                 self.db.commit()
@@ -495,10 +523,13 @@ class App(RoomFeatures, LocalPlayback):
         elif route == '/api/host/start':
             self.start_session(str(body.get('device', '')), bool(body.get('accepting', True)))
         elif route == '/api/host/stop':
+            self.background_armed = False
+            self.background_pending = None
             self.enabled = False
             self.idle_ready = False
             self.reason = 'Handoff stopped by host.'
             self.error = ''
+            self.request_playback_refresh()
         elif route == '/api/host/settings':
             accepting = bool(body.get('accepting', True))
             enabled = bool(body.get('enabled'))
@@ -543,20 +574,17 @@ class App(RoomFeatures, LocalPlayback):
             self.db.commit()
         elif route == '/api/host/skip':
             self.skip_request()
-        elif route == '/api/host/pause':
-            self.idle_ready = False
-            if not self.device:
-                raise f.Failure('Select the playback device first.')
-            self.enabled = False
-            self.reason = 'Handoff stopped after host playback control.'
-            if route.endswith('pause'):
-                if self.local_active:
-                    self.owned_local_status()
-                    self.local.call('pause')
-                else:
-                    self.api.call('/me/player/pause', 'PUT', params={'device_id': self.device})
-            else:
-                self.api.call('/me/player/next', 'POST', params={'device_id': self.device})
+            self.request_playback_refresh()
+        elif route in ('/api/host/pause', '/api/host/resume'):
+            self.playback_control(resume=route.endswith('/resume'))
+        elif route == '/api/host/background':
+            from background_playback import context_uri
+            device = str(body.get('device', ''))
+            if not device or device != self.device:
+                raise f.Failure('Start the session on this player before choosing its background music.')
+            uri = context_uri(body.get('uri'))
+            self.set_meta('background_context', {'uri': uri, 'device': device, 'explicit': True})
+            self.background_message = ''
         elif route == '/api/host/logout':
             session['host'] = False
         else:
@@ -564,8 +592,8 @@ class App(RoomFeatures, LocalPlayback):
         return {'ok': True}
 
 
-STATIC_FILES = {'/legacy': 'legacy.html', '/legacy/': 'legacy.html', '/legacy.js': 'legacy.js', '/legacy.css': 'legacy.css', '/site.webmanifest': 'site.webmanifest', '/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js', '/kiosk.js': 'kiosk.js'}
-STATIC_TYPES = {'legacy.html': 'text/html; charset=utf-8', 'legacy.js': 'text/javascript', 'legacy.css': 'text/css', 'site.webmanifest': 'application/manifest+json', 'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript', 'kiosk.js': 'text/javascript'}
+STATIC_FILES = {'/legacy': 'legacy.html', '/legacy/': 'legacy.html', '/legacy.js': 'legacy.js', '/legacy.css': 'legacy.css', '/site.webmanifest': 'site.webmanifest', '/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js', '/kiosk.js': 'kiosk.js', '/host.js': 'host.js', '/host.css': 'host.css'}
+STATIC_TYPES = {'legacy.html': 'text/html; charset=utf-8', 'legacy.js': 'text/javascript', 'legacy.css': 'text/css', 'site.webmanifest': 'application/manifest+json', 'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript', 'kiosk.js': 'text/javascript', 'host.js': 'text/javascript', 'host.css': 'text/css'}
 
 
 def handler(app):

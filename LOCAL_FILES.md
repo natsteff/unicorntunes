@@ -145,3 +145,8 @@ Automated tests cover incremental reuse, changes/removals, gain and peak limits,
 Update the restricted agent with the v0.6.0 helper to add `player_health.py`; the helper itself does not restart anything. **Check player health** reads fixed service fields, Spotify availability and categorized journal hints. It does not expose raw logs or credentials. **Restart Soloist** is a deliberate host action that can interrupt Spotify audio; the UI asks for confirmation, leaves handoff stopped and requires a fresh session start after device recovery. Local playback and uncertain/handed-off requests must be finished or reconciled first. The restricted command can restart only `soloist.service`, not arbitrary services or shell commands.
 
 The reason for the intermittent device disappearance remains unconfirmed until diagnostic evidence is collected on the affected device. This provides a recovery path without requiring SSH for each occurrence.
+
+
+## Resume paused local playback (v0.8.0)
+
+The host's Pause button becomes Resume when playback is confirmed paused. Resuming audio does not enable automatic request handoff. Local MPD resume requires agent 7, which uses MPD's pause-off command without replacing the queue or restarting the file; existing agent 6 remains compatible with ordinary playback and analysis. Follow the [v0.8.0 README upgrade instructions](README.md#upgrade-notes-for-v080) for the versioned helper. Spotify-only use needs no playback-device agent update.

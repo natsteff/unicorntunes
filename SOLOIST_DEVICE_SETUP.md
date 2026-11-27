@@ -1,6 +1,6 @@
 # Playback-device setup and rebuild guide
 
-UnicornTunes uses a Docker-hosted web application and a separate Linux playback device connected to the stereo. Spotify Soloist handles Spotify audio. The optional MPD local-file player is currently a trial; mixed-source search and playback integration are not implemented yet.
+UnicornTunes uses a Docker-hosted web application and a separate Linux playback device connected to the stereo. Spotify Soloist handles Spotify audio. The optional MPD local-file player supports mixed-source search and coordinated playback; audible calibration and reboot behavior still require validation on each installation.
 
 Machine-specific addresses, usernames, exact installed unit settings and validation observations are kept in the private installation record, outside version control. Substitute your own values in the commands below.
 
@@ -49,6 +49,8 @@ Spotify's startup interface can put the API key in service/process arguments. Do
 6. Reboot and repeat the audio/session checks without first opening an SSH login.
 
 A phone or Mac is not an ongoing playback dependency. Spotify authorization setup for HTTP deployments may use a temporary browser/SSH callback tunnel; see [DEPLOY.md](DEPLOY.md).
+
+For volume controls, distortion checks, persistence limits and safe maintenance, see [the README](README.md#volume-adjustment-and-distortion).
 
 ## Service diagnostics
 
