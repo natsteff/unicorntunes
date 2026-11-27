@@ -309,8 +309,6 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         const name=$('devices').selectedOptions[0]?.dataset.name;
         $('local-bind').hidden=!!selected&&current.local_player?.device===selected;
         $('host-editing-player').textContent=name?'Editing: '+name:'No player selected';
-        $('host-end-session').disabled=!current.device||!current.local_player?.enabled||current.local_player.device!==current.device||
-            selected!==current.device||$('host-end-session').dataset.busy==='true'||['waiting','offline'].includes(current.enabled?null:current.shutdown_progress?.[current.device]?.phase);
         renderPlayerCopy(current, selected);
         shuffleControl.checked=shuffleAutosave.draft()?.enabled??(current.player_background_shuffle?.[selected]!==false);
         shuffleAutosave.sync();
@@ -425,15 +423,17 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
     let shutdownRefreshTimer;
     function renderShutdownProgress(current){
         const button=$('host-end-session'), status=$('host-end-status');
-        const progress=!current.enabled&&selectedDevice()===current.device?current.shutdown_progress?.[current.device]:null;
+        const device=selectedDevice()||current.device;
+        const progress=!current.enabled&&device===current.device?current.shutdown_progress?.[device]:null;
         const ending=button.dataset.busy==='true'||progress?.phase==='waiting';
+        button.disabled=!current.device||!current.local_player?.enabled||current.local_player.device!==current.device||
+            device!==current.device||ending||progress?.phase==='offline';
         button.textContent=ending?'Ending Session…':progress?.phase==='offline'?'Session Ended':'End Session';
         button.classList.toggle('is-ending',ending);
         button.classList.toggle('is-ended',!ending&&progress?.phase==='offline');
         button.setAttribute('aria-busy',String(ending));
         if(status.dataset.error!=='true'){
-            if(current.enabled&&!ending)status.textContent='';
-            else if(progress)status.textContent=progress.message;
+            status.textContent=progress?.message||(ending?'Ending session and requesting shutdown…':'');
         }
         if(ending&&!shutdownRefreshTimer){
             shutdownRefreshTimer=setTimeout(async()=>{
@@ -443,8 +443,8 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         }
     }
     $('host-end-session').onclick=async event=>{
-        const button=event.currentTarget, device=selectedDevice();
-        const name=$('devices').selectedOptions[0]?.dataset.name;
+        const button=event.currentTarget, device=selectedDevice()||state.device;
+        const name=$('devices').selectedOptions[0]?.dataset.name||state.player_names?.[device]||'the saved player';
         if(!confirm('End the session on '+name+', archive queued requests, and shut down its Pine64?'))return;
         const status=$('host-end-status');
         delete status.dataset.error;

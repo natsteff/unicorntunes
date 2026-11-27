@@ -93,8 +93,11 @@ class MixedPlaybackTests(unittest.TestCase):
                         'artists':[{'id':identifier,'name':title}]}
             def call(path, method='GET', payload=None, params=None):
                 if path=='/search':
-                    self.assertEqual(params['type'], 'artist')
-                    return {'artists':{'items':[{'id':identifier,'name':title}]}}
+                    if params['type'] == 'artist':
+                        return {'artists':{'items':[{'id':identifier,'name':title}]}}
+                    self.assertEqual(params['q'], f'artist:"{title}"')
+                    return {'tracks':{'items':[song(11),dict(song(13),artists=[{'id':'wrong'}]),
+                                               song(0),song(11)]}}
                 if path.endswith('/albums'):
                     return {'items':[{'id':album_one,'name':'First'},{'id':album_two,'name':'Second'},
                                      {'id':compilation,'name':'Various'}]}
@@ -107,13 +110,15 @@ class MixedPlaybackTests(unittest.TestCase):
             with patch.object(self.app.api, 'call', side_effect=call):
                 result = self.app.mixed_search({'mode':['artist'],'q':[title]})
                 self.assertEqual(result['artists'][0]['id'], identifier)
-                query = {'mode':['artist'],'artist_id':[identifier],'limit':['10']}
+                query = {'mode':['artist'],'artist_id':[identifier],'artist_name':[title],'limit':['10']}
                 first = self.app.mixed_search(query)
+                self.assertEqual([t['name'] for t in first['top_matches']], [title+'11',title+'0'])
                 self.assertEqual(len(first['items']), 10)
                 self.assertTrue(first['more'])
                 second = self.app.mixed_search(dict(query,offset=['10']))
                 self.assertEqual([t['name'] for t in second['items']], [title+'10',title+'11',title+'14'])
                 self.assertEqual(second['total'], 13)
+                self.assertEqual(second['top_matches'], [])
                 self.assertFalse(second['more'])
 
     def test_selected_player_browse_uses_link_and_exact_total(self):

@@ -29,9 +29,23 @@ function info(song,metadata=false){const wrap=el('div',undefined,'songinfo'),lin
 function button(text,fn,cls){const b=el('button',text,cls);b.onclick=async()=>{b.disabled=true;try{await fn();message('');await refresh();}catch(e){message(e.message);}finally{b.disabled=false;}};return b;}
 let refreshInFlight;
 async function refresh(){if(refreshInFlight)return refreshInFlight;refreshInFlight=refreshState();try{return await refreshInFlight;}finally{refreshInFlight=null;}}
-async function refreshState(){try{state=await api('/api/state');csrf=state.csrf;if(window.kioskSession&&!window.kioskSession.ensure(csrf))return;render();if(window.unlockKiosk)window.unlockKiosk();}catch(e){message(e.message);}}
-let actionRefreshTimer;
-async function refreshAfterPlaybackAction(){clearTimeout(actionRefreshTimer);await refresh();let remaining=6;const tick=async()=>{if(!state.host||document.hidden)return;await refresh();if(--remaining>0)actionRefreshTimer=setTimeout(tick,1000);};actionRefreshTimer=setTimeout(tick,1000);}
+async function refreshState(){try{const wasRunning=state.handoff?.status==='Running';state=await api('/api/state');csrf=state.csrf;if(window.kioskSession&&!window.kioskSession.ensure(csrf))return;const reloadDevices=state.host&&location.pathname==='/host'&&devicesLoaded&&!wasRunning&&state.enabled;render();if(reloadDevices)loadDevices();if(window.unlockKiosk)window.unlockKiosk();}catch(e){message(e.message);}}
+let actionRefreshTimer, actionRefreshGeneration=0;
+async function refreshAfterPlaybackAction(){
+    const generation=++actionRefreshGeneration;
+    clearTimeout(actionRefreshTimer);
+    await refresh();
+    let elapsed=0;
+    const tick=async()=>{
+        if(generation!==actionRefreshGeneration||!state.host||document.hidden)return;
+        await refresh();
+        elapsed++;
+        if(elapsed<6||(elapsed<20&&state.handoff?.status==='Starting')){
+            if(generation===actionRefreshGeneration)actionRefreshTimer=setTimeout(tick,1000);
+        }
+    };
+    if(generation===actionRefreshGeneration)actionRefreshTimer=setTimeout(tick,1000);
+}
 function render(){for(const uri of submitted)if(!state.queue.some(s=>s.uri===uri)&&state.now?.uri!==uri)submitted.delete(uri);updateRequestButtons();const now=$('now');now.replaceChildren();if(state.now){const song=state.now;const title=el('h2'),link=el(song.source==='local'?'span':'a',song.name);link.href=safeURL(song.url)||'#';link.target='_blank';link.rel='noopener noreferrer';title.append(link);if(song.source==='local')now.append(el('span','Local file','source-badge'));now.append(cover(song),title,el('p',song.artists),el('p',song.playing?'Now playing':(state.handoff?.idle?'Waiting for the next request':'Playback paused')));const bar=el('div',undefined,'nowprogress'),fill=el('div');fill.style.width=Math.min(100,Math.max(0,100*(song.progress_ms||0)/(song.duration_ms||1)))+'%';bar.append(fill);now.append(bar);}else now.append(el('h2','Waiting for the music'),el('p','The host will get things started.'));
 const queue=$('queue');queue.replaceChildren();$('count').textContent=state.queue.length+' REQUEST'+(state.queue.length===1?'':'S');for(const [index,song]of state.queue.entries()){const row=el('div',undefined,'song'+(song.mine?' my-request':''));row.append(el('span',String(index+1).padStart(2,'0'),'rank'),cover(song));const details=info(song);details.append(el('small','Requested by '+song.requested_by));if(song.mine)details.append(el('small','Your request','ownership'));if(song.upvoted_by?.length)details.append(el('small','Upvoted by '+song.upvoted_by.join(', ')));if(song.protected)details.append(el('small','Next request · protected','protected-label'));else if(song.guaranteed&&state.room?.fair_queue)details.append(el('small','Protected first turn'));if(song.state!=='waiting')details.append(el('small',{'accepted':song.source==='local'?'Starting local playback · locked':'Handed to Spotify · locked','queued':'In Spotify queue · locked','playing':'Playing','uncertain':'Awaiting host review','sending':'Sending · locked'}[song.state]||song.state));row.append(details);const vote=button((song.voted?'✓ ':'↑ ')+song.votes,()=>api('/api/vote',{id:song.id}),song.voted?'voted':'secondary');vote.setAttribute('aria-label',(song.voted?'Voted for ':'Vote for ')+song.name);vote.disabled=song.voted||song.state!=='waiting';row.append(vote);if(state.host&&song.state==='waiting')row.append(button('Remove',()=>api('/api/host/remove',{id:song.id}),'secondary'));if(state.host&&['uncertain','accepted','queued'].includes(song.state))row.append(button('Reconcile',async()=>{const note=prompt('Check the actual player and queue first. Describe what you found. A local track will be stopped before releasing its request; Spotify entries must be checked separately.');if(note)await api('/api/host/reconcile',{id:song.id,note});},'secondary'));queue.append(row);}if(!state.queue.length)queue.append(el('p',state.now?.playing?(state.background&&!state.now.requested_by?'Background music is playing. Request something you love.':'No more requests queued.'):(state.handoff?.idle?'Player ready. Request a song to start the music.':'An open queue. A world of possibilities.'),'empty'));
 if(state.handoff)$('handoffstatus').textContent=state.handoff.status+(state.handoff.reason?' — '+state.handoff.reason:'');if(state.host){$('save').textContent=state.enabled?'Move / restart session here':'Start session';$('stop').disabled=!state.enabled;$('pause').textContent=state.now&&!state.now.playing?'Resume playback':'Pause playback';$('pause').disabled=!state.now||state.handoff?.stale;$('connection').textContent=state.spotify_connected?'Spotify authorization saved.':'Connect Spotify before selecting a playback device.';if(!$('accepting').disabled)$('accepting').checked=state.accepting;if(!settingsDirty&&state.device&&Array.from($('devices').options).some(option=>option.value===state.device))$('devices').value=state.device;}if(location.pathname==='/host'){$('browse-local').hidden=!state.host;invalidateLocalBrowse();$('host').hidden=false;$('login').hidden=state.host;$('controls').hidden=!state.host;if(state.host&&!devicesLoaded)loadDevices();if(state.host&&typeof renderLocalPlayer==='function')renderLocalPlayer();}if(location.pathname==='/'){$('browse-local').hidden=false;invalidateLocalBrowse();}if(state.error&&state.host&&location.pathname==='/host')message(state.error);if(typeof renderRoom==='function')renderRoom();if(typeof renderHostDesk==='function'){window.hostDeskState=state;renderHostDesk(state,settingsDirty);}}
@@ -104,12 +118,16 @@ async function search(){
                 $('results').append(local);
             }
         }
-        for(const song of data.items){
+        const songRow=song=>{
             const row=el('div',undefined,'song');
             row.append(cover(song),info(song,true),requestButton(song));
             if(state.host&&location.pathname==='/host'&&typeof favoriteButton==='function')row.append(favoriteButton(song));
-            $('results').append(row);
+            return row;
+        };
+        if(data.top_matches?.length){
+            $('results').append(el('h3','Top matches'),...data.top_matches.map(songRow),el('h3','All tracks'));
         }
+        $('results').append(...data.items.map(songRow));
         updateRequestButtons();
         const count=data.total==null?(data.artist_catalog?'Loading catalog in batches':'Total unavailable'):`${data.total} result${data.total===1?'':'s'}`;
         const empty=data.items.length?'':data.more?' · No matches on this page':' · No tracks found on this page';

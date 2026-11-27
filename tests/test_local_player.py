@@ -129,11 +129,20 @@ class LocalPlayerTests(unittest.TestCase):
         self.app.api.api.call.side_effect = lambda path, *_: (
             {'devices':[{'id':'speaker'}]} if path.endswith('/devices') else {'is_playing':False}
         )
+        self.app.local = Mock()
+        status = {'state':'stop'}
+        self.app.local.call.side_effect = [f.Failure('Connection refused'), status]
         first = {'boot_id':'a'*36,'uptime':30}
+        self.app.set_meta('shutdown_progress', {'speaker':{
+            'phase':'offline', 'accepted_at':local_player.time.time()-60, 'boot_id':'z'*36}})
         with patch.object(self.app, 'start_session') as start:
             self.app.handle_player_boot('speaker', first)
+            start.assert_not_called()
+            self.assertFalse(self.app.meta('boot_start_status')['speaker']['consumed'])
+            self.assertNotIn('speaker', self.app.meta('shutdown_progress'))
             self.app.handle_player_boot('speaker', first)
-            start.assert_called_once_with('speaker', True)
+            self.app.handle_player_boot('speaker', first)
+            start.assert_called_once_with('speaker', True, local_status=status)
             self.app.set_meta('player_auto_start', {'speaker':False})
             self.app.handle_player_boot('speaker', {'boot_id':'b'*36,'uptime':60})
             self.assertEqual(start.call_count, 1)

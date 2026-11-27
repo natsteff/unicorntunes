@@ -233,9 +233,19 @@ class LocalPlayback:
 
     def handle_player_boot(self, device, snapshot):
         boot_id, uptime = snapshot.get('boot_id'), snapshot.get('uptime')
-        if not isinstance(boot_id, str) or not re.fullmatch(r'[a-f0-9-]{36}', boot_id) or type(uptime) not in (int,float) or not 0 <= uptime <= 600:
+        if not isinstance(boot_id, str) or not re.fullmatch(r'[a-f0-9-]{36}', boot_id) or type(uptime) not in (int,float) or not uptime >= 0:
             return
+        progress = self.meta('shutdown_progress', {})
+        shutdown = progress.get(device)
+        if shutdown and (boot_id != shutdown.get('boot_id') and
+                         time.time() - uptime > shutdown['accepted_at']):
+            del progress[device]
+            self.set_meta('shutdown_progress', progress)
         previous = self.meta('boot_start_status', {}).get(device, {})
+        if uptime > 600:
+            if previous.get('boot_id') == boot_id and not previous.get('consumed'):
+                self.update_boot_status(device, boot_id, 'Power-on start timed out waiting for playback.', True)
+            return
         if previous.get('boot_id') == boot_id and previous.get('consumed'):
             return
         def report(message, consumed=False):
@@ -255,6 +265,7 @@ class LocalPlayback:
         if self.db.execute("SELECT 1 FROM songs WHERE state IN ('sending','accepted','queued','uncertain')").fetchone():
             report('Power-on start is held until outstanding playback is reconciled.', True)
             return
+        local_status = None
         try:
             devices = self.api.call('/me/player/devices').get('devices', [])
             if not any(item.get('id') == device and not item.get('is_restricted') for item in devices):
@@ -265,13 +276,22 @@ class LocalPlayback:
             if current.get('is_playing') and actual != device:
                 report('Spotify is playing on another device. Use the Host Desk to move it.', True)
                 return
+            if self.local_config.get('device') == device:
+                try:
+                    local_status = self.local.call('status')
+                except f.Failure:
+                    report('Pine64 booted. Waiting for local playback to be ready.')
+                    return
+                if local_status.get('state') in ('play', 'pause'):
+                    report('MPD is active outside this session. Stop it before starting Spotify.', True)
+                    return
         except f.Failure:
             report('Pine64 booted. Waiting to verify Spotify playback.')
             return
         # Persist the decision before making a playback mutation. Never replay it after a lost response.
         report('Starting this player after power-on.', True)
         try:
-            self.start_session(device, self.accepting)
+            self.start_session(device, self.accepting, local_status=local_status)
         except (f.Failure, OSError) as error:
             report('Power-on start needs attention: ' + str(error), True)
         else:
@@ -313,15 +333,21 @@ class LocalPlayback:
         if probe or due < self.boot_probe_due or not device or not self.local_config.get('enabled'):
             return
         shutdown = self.meta('shutdown_progress', {}).get(device, {})
-        self.boot_probe_due = due + (2 if shutdown.get('phase') == 'waiting' else 15)
+        boot = self.meta('boot_start_status', {}).get(device, {})
+        awaiting_readiness = boot.get('boot_id') and not boot.get('consumed')
+        self.boot_probe_due = due + (2 if shutdown.get('phase') == 'waiting' else 5 if awaiting_readiness else 15)
         connection = self.local
         probe = {'device':device, 'connection':connection}
         self.boot_probe = probe
 
         def read_boot():
             try:
-                probe['result'] = (connection.shutdown_reachability() if shutdown.get('phase') == 'waiting'
-                                   else connection.call('boot_status'))
+                if shutdown.get('phase') == 'waiting':
+                    reachability = connection.shutdown_reachability()
+                    if not reachability.get('reachable'):
+                        probe['result'] = reachability
+                        return
+                probe['result'] = connection.call('boot_status')
             except f.Failure as error:
                 message = str(error)
                 probe['result'] = {'upgrade_required':'Unknown action' in message,
@@ -361,6 +387,7 @@ class LocalPlayback:
         self.local_active = self.now = None
         progress = self.meta('shutdown_progress', {})
         progress[device] = {'accepted_at':time.time(), 'phase':'waiting', 'failures':0,
+                            'boot_id':self.meta('boot_start_status', {}).get(device, {}).get('boot_id'),
                             'message':'Pine64 is shutting down. Wait before switching off the amp.'}
         self.set_meta('shutdown_progress', progress)
         self.boot_probe_due = 0
@@ -646,12 +673,31 @@ class LocalPlayback:
                 raise
             warning = 'Spotify did not finish loading this catalog page: ' + str(error)
         items = entry['tracks'][offset:offset+limit]
+        name = query.get('artist_name', [''])[0].strip()
+        if not offset and name and len(name) <= 150 and not any(fields[k] for k in ('track','album','year')) and fields['exact'] != '1':
+            if 'top_matches' not in entry:
+                try:
+                    ranked = self.api.call('/search', params={
+                        'q':'artist:"' + name.replace('"', '').replace(chr(92), '') + '"',
+                        'type':'track', 'limit':10,
+                    }).get('tracks', {}).get('items', [])
+                except f.Failure:
+                    ranked = []
+                matches = {}
+                for item in ranked:
+                    if (item and f.TRACK.fullmatch(item.get('uri') or '') and item.get('is_playable') is not False
+                            and not item.get('restrictions') and any(a.get('id') == artist_id for a in item.get('artists') or [])):
+                        matches.setdefault(item['uri'], track(item))
+                entry['top_matches'] = list(matches.values())
+            top_matches = entry['top_matches']
+        else:
+            top_matches = []
         if len(self.catalog) > 2000:
             self.catalog.clear()
-        for song in items:
+        for song in top_matches + items:
             song['house_favorite'] = bool(self.db.execute('SELECT 1 FROM favorites WHERE uri=?',(song['uri'],)).fetchone())
             self.catalog[song['uri']] = song
-        return {'items':items, 'total':None if more() else len(entry['tracks']), 'offset':offset,
+        return {'items':items, 'top_matches':top_matches, 'total':None if more() else len(entry['tracks']), 'offset':offset,
                 'more':len(entry['tracks']) > offset+limit or more(),
                 'continue_page':len(entry['tracks']) < offset+limit and more(),
                 'warning':warning, 'artist_catalog':True}

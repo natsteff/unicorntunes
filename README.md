@@ -304,3 +304,9 @@ Run `dcupd` for the improved Artist Only catalog browser, guest request scroll, 
 The generated player welcome highlights the player name in red. Spotify upcoming snapshots group consecutive duplicate listings without modifying Spotify’s queue.
 
 End Session now shows the shutdown phase while it checks the linked Pine64. The existing helper and shutdown permission are sufficient. Confirm the board has finished shutting down before switching off the amp.
+
+## Upgrade notes for v0.8.8
+
+Run `dcupd` on the UnicornTunes Docker host. Garage's existing playback helper supports this release. After the updated Host Desk shows v0.8.8, switch the Pine64's amp on and allow the linked player to start the session. Confirm Host Desk reports **Running**, then request a track to check automatic handoff from background music.
+
+Power-on start waits for local playback readiness. A confirmed new boot clears the previous shutdown notice. Startup checks Spotify playback while its device comes online. Artist browsing shows **Top matches** when available and keeps the full catalog available below.

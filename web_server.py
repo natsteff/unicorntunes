@@ -100,6 +100,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         self.background_armed, self.background_message, self.quick_poll_until = False, "", 0
         self.background_pending = None
         self.startup_pending = None
+        self.startup_settle_until = 0
         self.background_shuffle_command = None
         self.verified_background_context = None
         self.last_poll, self.next_poll = 0, 0
@@ -260,11 +261,16 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             previous_device = getattr(self, 'observed_device', None)
             try:
                 state = self.api.call('/me/player')
-            except f.Failure:
-                if self.startup_pending and time.monotonic() < self.startup_pending['deadline']:
+            except f.Failure as error:
+                if ((self.startup_pending and time.monotonic() < self.startup_pending['deadline']) or
+                        (self.enabled and time.monotonic() < self.startup_settle_until and error.status == 404)):
                     self.next_poll = time.monotonic() + 1
                     return
                 raise
+            if (self.enabled and time.monotonic() < self.startup_settle_until and
+                    not (state.get('device') or {}).get('id') and not self.idle_ready):
+                self.next_poll = time.monotonic() + 1
+                return
             self.update_idle_state(state)
             self.updated = time.time()
             self.error = ''
@@ -291,8 +297,15 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                 return
             row=next((r for r in self.queue('') if r['state']=='waiting'),None)
             owned = self.db.execute("SELECT 1 FROM songs WHERE state='playing' AND uri=?", (item.get('uri'),)).fetchone()
-            if (row or owned) and actual == self.device and not self.sync_background_shuffle(state, False):
-                return
+            if (row or owned) and actual == self.device:
+                try:
+                    if not self.sync_background_shuffle(state, False):
+                        return
+                except f.Failure as error:
+                    if error.status != 404 or time.monotonic() >= self.startup_settle_until:
+                        raise
+                    self.next_poll = time.monotonic() + 2
+                    return
             configured = self.effective_background(self.device).get('uri') or ''
             context = self.normalized_context(state)
             fallback = self.meta('house_background', {}).get('uri')
@@ -411,6 +424,8 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         self.device, self.accepting = device, accepting
         self.enabled, self.reason, self.error = True, '', ''
         self.idle_ready = idle
+        self.startup_settle_until = time.monotonic() + 25
+        self.upcoming_due = 0
         item = observed.get('item')
         self.now = dict(track(item), playing=True, progress_ms=observed.get('progress_ms', 0)) if item else None
         self.updated = time.time()
@@ -441,32 +456,45 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         else:
             pending.pop('sample', None)
             progressed = False
-        confirmed = playing and (context == pending['uri'] or (not context and progressed and now >= pending['grace']))
+        expected = pending['uri']
+        seed = pending.get('seed')
+        confirmed = playing and (not expected or context == expected or
+                                 (not context and progressed and now >= pending['grace']))
         if confirmed:
             if not state.get('shuffle_state') and state.get('repeat_state') in (None, 'off'):
                 try:
-                    self.finish_session_start(device, pending['accepting'], state)
+                    self.finish_session_start(device, pending['accepting'], state, seed)
                 except OSError as error:
                     raise f.Failure('Could not save the player configuration.') from error
-                self.verified_background_context = (device, pending['uri'])
+                if expected:
+                    self.verified_background_context = (device, expected)
                 self.startup_pending = None
                 self.diagnostics.emit('background.start_confirmed', context_reported=bool(context))
                 return True
-            if not pending.get('settings_sent'):
-                pending['settings_sent'] = True
-                if state.get('shuffle_state'):
-                    self.api.call('/me/player/shuffle', 'PUT', params={'state':'false','device_id':device})
-                if state.get('repeat_state') not in (None, 'off'):
-                    self.api.call('/me/player/repeat', 'PUT', params={'state':'off','device_id':device})
+            settings = (('shuffle', state.get('shuffle_state') is True, 'false'),
+                        ('repeat', state.get('repeat_state') not in (None, 'off'), 'off'))
+            for name, needs_change, value in settings:
+                if not needs_change or now < pending.get(name + '_retry_at', 0) or pending.get(name + '_sent'):
+                    continue
+                try:
+                    self.api.call('/me/player/' + name, 'PUT', params={'state':value, 'device_id':device})
+                except f.Failure as error:
+                    if error.status != 404 or error.uncertain:
+                        raise
+                    pending[name + '_retry_at'] = now + 2
+                else:
+                    pending[name + '_sent'] = True
         if now >= pending['deadline']:
             self.diagnostics.emit('background.start_unconfirmed', target_observed=actual==device,
                                   context_state='matched' if context==pending['uri'] else 'different' if context else 'missing',
                                   playing=bool(playing))
-            raise f.Failure('Saved background playback could not be confirmed on this player. Check Spotify playback before starting again.')
+            if confirmed:
+                raise f.Failure('Playback is active, but Spotify shuffle or repeat could not be turned off. Handoff stayed stopped.')
+            raise f.Failure('Playback could not be confirmed on this player. Check Spotify playback before starting again.')
         self.next_poll = now + 1
         return False
 
-    def start_session(self, device, accepting):
+    def start_session(self, device, accepting, *, local_status=None):
         if self.startup_pending:
             raise f.Failure('Wait for the current startup check or stop it before starting another session.')
         self.enabled = False
@@ -484,7 +512,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         if self.local_active:
             self.stop_local_owned()
         elif self.local_config.get('enabled') and self.local_config.get('device') == device:
-            status = self.local.call('status')
+            status = local_status if local_status is not None else self.local.call('status')
             if status.get('state') in ('play', 'pause'):
                 raise f.Failure('MPD is active outside this session. Stop it before starting Spotify.')
         seed_local = next((r for r in self.queue('') if r['state']=='waiting'), None)
@@ -568,20 +596,17 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                         raise
                     self.db.execute("UPDATE songs SET state='accepted' WHERE id=?", (seed['id'],))
                     self.db.commit()
-            if observed.get('shuffle_state') is not False:
-                self.api.call('/me/player/shuffle', 'PUT', params={'state': 'false', 'device_id': device})
-            if observed.get('repeat_state') != 'off':
-                self.api.call('/me/player/repeat', 'PUT', params={'state': 'off', 'device_id': device})
-            for attempt in range(4):
-                observed = self.api.call('/me/player')
-                valid = ((observed.get('device') or {}).get('id') == device and observed.get('is_playing')
-                         and not observed.get('shuffle_state') and observed.get('repeat_state') in (None, 'off'))
-                if valid:
-                    break
-                time.sleep(0.5)
-            if not valid:
-                raise f.Failure('Player playback/settings could not be confirmed. Handoff remains stopped; check Soloist connectivity and Spotify permissions.')
-            self.finish_session_start(device, accepting, observed, seed)
+            started = time.monotonic()
+            self.startup_pending = {'uri':None, 'device':device, 'accepting':accepting,
+                                    'seed':seed, 'previous_device':device,
+                                    'grace':started, 'deadline':started + 18}
+            try:
+                latest = self.api.call('/me/player')
+            except f.Failure:
+                self.request_playback_refresh()
+            else:
+                if not self.confirm_background_start(latest):
+                    self.request_playback_refresh()
         except (f.Failure, OSError) as error:
             self.startup_pending = None
             self.reason = 'Session start needs attention: ' + (str(error) if isinstance(error, f.Failure) else 'Could not save configuration.')

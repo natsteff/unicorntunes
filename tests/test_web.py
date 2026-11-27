@@ -358,8 +358,36 @@ class SessionStartTests(unittest.TestCase):
                 self.app.action(self.sessions[0],'/api/host/'+route,{'device':'speaker'})
         self.assertFalse(self.api.calls)
 
+    def test_start_waits_for_target_after_shuffle_404_then_dispatches(self):
+        from unittest.mock import patch
+        self.api.state.update(shuffle_state=True, repeat_state='off')
+        original = self.api.call
+
+        def call(path, method='GET', payload=None, params=None):
+            if path == '/me/player/shuffle' and method == 'PUT':
+                raise f.Failure('device unavailable', status=404)
+            return original(path, method, payload, params)
+
+        with patch.object(self.api, 'call', side_effect=call):
+            self.app.start_session('speaker', True)
+            self.assertEqual(self.app.health()['status'], 'Starting')
+            with patch.dict(self.api.state, {'device':None}):
+                self.app.poll(True)
+                self.assertFalse(self.app.enabled)
+            self.api.state['shuffle_state'] = False
+            self.app.poll(True)
+            self.assertTrue(self.app.enabled)
+            with patch.dict(self.api.state, {'device':None}):
+                self.app.poll(True)
+                self.assertTrue(self.app.enabled)
+            self.app.submit(self.sessions[0], B)
+            self.app.poll(True)
+            writes = [(path, method) for path, method, _ in self.api.calls if method != 'GET']
+            self.assertEqual(writes, [('/me/player/play', 'PUT')])
+
     def test_mutation_failure_stops_without_retry(self):
         self.app.enabled=True
+        self.api.state['shuffle_state'] = True
         self.api.error=f.Failure('timeout',uncertain=True)
         with self.assertRaises(f.Failure):
             self.app.start_session('speaker',True)
