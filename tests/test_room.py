@@ -164,6 +164,7 @@ class RoomTests(unittest.TestCase):
         self.app.set_meta('player_names', {'speaker':'UnicornPlayer - Garage'})
         self.app.set_meta('player_headlines', {'speaker':'This is a test'})
         self.assertEqual(self.app.room_state(guest)['welcome_headline'], 'Welcome to UnicornPlayer - Garage')
+        self.assertEqual(self.app.room_state(guest)['headline_accent'], 'UnicornPlayer - Garage')
         self.app.action(host, '/api/host/player-welcome', {'device':'speaker','welcome':'  '})
         self.assertEqual(self.app.room_state(guest)['welcome_headline'], 'Welcome to UnicornPlayer - Garage')
         self.app.action(host, '/api/host/player-welcome', {'device':'speaker','restore':True})

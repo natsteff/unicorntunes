@@ -296,3 +296,11 @@ Run `dcupd` for Host Desk autosave, the editing-player label, and the startup an
 Run `dcupd` for the guest greeting, search jump and quick filters, mobile Host Desk install link, and compact Host Desk Playback search and queue. Player settings now has **Use the Main headline** and **Shuffle background playlist**. Shuffle defaults on for background playlists and is turned off before dispatching guest requests. Playback reads volume levels when the session starts.
 
 After **End Session**, the Host Desk checks the linked Pine64’s reachability and reports its progress. A board becoming unreachable is not proof of a complete shutdown. Confirm the board has finished shutting down before switching off the amp. The v0.8.5 playback helper and shutdown permission remain sufficient.
+
+## Upgrade notes for v0.8.7
+
+Run `dcupd` for the improved Artist Only catalog browser, guest request scroll, and shutdown progress. Artist Only shows matching Spotify artists and then their requestable tracks across available releases. The catalog loads in batches. Local artist matches are available through the local search action.
+
+The generated player welcome highlights the player name in red. Spotify upcoming snapshots group consecutive duplicate listings without modifying Spotify’s queue.
+
+End Session now shows the shutdown phase while it checks the linked Pine64. The existing helper and shutdown permission are sufficient. Confirm the board has finished shutting down before switching off the amp.

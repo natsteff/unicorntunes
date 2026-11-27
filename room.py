@@ -243,7 +243,7 @@ class RoomFeatures(RequestHistory):
         try:
             data = self.api.call('/me/player/queue')
             items = [track(x) for x in data.get('queue', [])[:20]]
-            repeated = len(items) > 1 and len({x.get('uri') for x in items}) == 1
+            repeated = any(a.get('uri') and a.get('uri') == b.get('uri') for a, b in zip(items, items[1:]))
             self.spotify_upcoming = {'items': items, 'updated': time.time(), 'error': '',
                                      'warning': 'Spotify reports the same track repeatedly. This snapshot does not prove repeat mode or actual playback order.' if repeated else ''}
         except f.Failure as error:
@@ -406,7 +406,7 @@ class RoomFeatures(RequestHistory):
                 'shutdown_progress': self.meta('shutdown_progress', {}) if host else {},
                 'player_accents': self.meta('player_welcome_accents', {}) if host else {},
                 'headline_accent': self.meta('player_welcome_accents', {}).get(self.device, '')
-                    if not use_main and custom_welcome else self.room.get('headline_accent', '') if use_main else '',
+                    if not use_main and custom_welcome else self.room.get('headline_accent', '') if use_main else player_name or '',
                 'soloist_update_schedule': self.meta('soloist_update_schedule', {}) if host else {},
                 'background_music': self.background_state() if self.sessions.get(sid, {}).get('host') else None, 'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
                 'local_player': dict(self.local_config, count=self.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0]) if self.sessions.get(sid, {}).get('host') else None,

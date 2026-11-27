@@ -50,3 +50,9 @@
 .host-shutdown-callout:not(:empty){padding:12px;background:#351c1b;border:1px solid #d35451;border-radius:6px;color:#ffe6e5}
 .host-guest-link{align-self:center}
 .host-playback-library{margin-top:22px}
+
+#host .host-danger.is-ending:disabled{background:#932820;border-color:#ef5550;color:#fff;animation:shutdown-pulse 1.6s ease-in-out infinite}
+@keyframes shutdown-pulse{50%{background:#64201c}}
+@media(prefers-reduced-motion:reduce){#host .host-danger.is-ending:disabled{animation:none}}
+
+#host .host-danger.is-ended:disabled{background:#242424;color:#b8b8b8;border-color:#5b5b5b}

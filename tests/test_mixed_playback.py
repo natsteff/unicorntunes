@@ -85,6 +85,37 @@ class MixedPlaybackTests(unittest.TestCase):
         self.assertEqual(result['items'][0]['source'],'local')
         self.assertFalse(any(e[0]=='spotify' for e in self.events))
 
+    def test_artist_only_enumerates_tracks_across_releases(self):
+        for title, identifier in [('Slayer', 's'*22), ('As I Lay Dying', 'a'*22)]:
+            album_one, album_two, compilation = 'b'*22, 'c'*22, 'd'*22
+            def song(number):
+                return {'uri':'spotify:track:'+str(number).zfill(22), 'name':title+str(number),
+                        'artists':[{'id':identifier,'name':title}]}
+            def call(path, method='GET', payload=None, params=None):
+                if path=='/search':
+                    self.assertEqual(params['type'], 'artist')
+                    return {'artists':{'items':[{'id':identifier,'name':title}]}}
+                if path.endswith('/albums'):
+                    return {'items':[{'id':album_one,'name':'First'},{'id':album_two,'name':'Second'},
+                                     {'id':compilation,'name':'Various'}]}
+                if album_one in path:
+                    return {'items':[song(i) for i in range(10)] if params['offset']==0 else [song(10)],
+                            'next':'page' if params['offset']==0 else None}
+                if album_two in path:
+                    return {'items':[song(10),song(11),dict(song(12),is_playable=False)]}
+                return {'items':[dict(song(13),artists=[{'id':'wrong'}]),song(14)]}
+            with patch.object(self.app.api, 'call', side_effect=call):
+                result = self.app.mixed_search({'mode':['artist'],'q':[title]})
+                self.assertEqual(result['artists'][0]['id'], identifier)
+                query = {'mode':['artist'],'artist_id':[identifier],'limit':['10']}
+                first = self.app.mixed_search(query)
+                self.assertEqual(len(first['items']), 10)
+                self.assertTrue(first['more'])
+                second = self.app.mixed_search(dict(query,offset=['10']))
+                self.assertEqual([t['name'] for t in second['items']], [title+'10',title+'11',title+'14'])
+                self.assertEqual(second['total'], 13)
+                self.assertFalse(second['more'])
+
     def test_selected_player_browse_uses_link_and_exact_total(self):
         query = {'source':['local'], 'player':['speaker'], 'limit':['20']}
         result = self.app.mixed_search(query, host=True)

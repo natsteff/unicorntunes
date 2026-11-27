@@ -190,6 +190,8 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         sent = self.background_shuffle_command
         enabling = not enabled and sent and sent[:2] == (self.device, True)
         if not enabling and (observed is enabled or (not enabled and observed is None and not sent)):
+            if sent and sent[:2] == (self.device, enabled):
+                self.diagnostics.emit('background.shuffle_confirmed', enabled=enabled)
             self.background_shuffle_command = None
             return True
         key = (self.device, enabled)
@@ -199,6 +201,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             return False
         self.api.call('/me/player/shuffle', 'PUT', params={'state':'true' if enabled else 'false','device_id':self.device})
         self.background_shuffle_command = (*key, time.monotonic())
+        self.diagnostics.emit('background.shuffle_requested', enabled=enabled)
         self.request_playback_refresh()
         return False
 
@@ -291,7 +294,10 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             if (row or owned) and actual == self.device and not self.sync_background_shuffle(state, False):
                 return
             configured = self.effective_background(self.device).get('uri') or ''
-            context = (state.get('context') or {}).get('uri') or ''
+            context = self.normalized_context(state)
+            fallback = self.meta('house_background', {}).get('uri')
+            if fallback and (context == fallback or (not context and self.verified_background_context == (self.device, fallback))):
+                configured = fallback
             if row or owned or (context and context != configured):
                 self.verified_background_context = None
             verified = context == configured or (not context and self.verified_background_context == (self.device, configured))
@@ -397,6 +403,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             raise f.Failure('Spotify did not return the required credentials.')
         tokens['expires_at'] = time.time() + tokens.get('expires_in', 3600)
         f.private_write(self.data / 'tokens.json', tokens)
+        self.artist_catalog_cache.clear()
         self.next_poll = 0
 
     def finish_session_start(self, device, accepting, observed, seed=None, idle=False):
@@ -419,10 +426,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         pending = self.startup_pending
         device = pending['device']
         actual = (state.get('device') or {}).get('id')
-        context = (state.get('context') or {}).get('uri') or ''
-        # Some clients return the older user-qualified URI for the same playlist.
-        if context.startswith('spotify:user:') and ':playlist:' in context:
-            context = 'spotify:playlist:' + context.rsplit(':playlist:', 1)[-1]
+        context = self.normalized_context(state)
         playing = actual == device and state.get('is_playing') and (state.get('item') or {}).get('uri')
         now = time.monotonic()
         if actual == device:

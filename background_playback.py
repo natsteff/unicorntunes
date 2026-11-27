@@ -37,6 +37,13 @@ class BackgroundPlayback:
             return dict(saved, source='player')
         return dict(self.meta('house_background', {}), device=device, source='house')
 
+    @staticmethod
+    def normalized_context(state):
+        context = (state.get('context') or {}).get('uri') or ''
+        if context.startswith('spotify:user:') and ':playlist:' in context:
+            return 'spotify:playlist:' + context.rsplit(':playlist:', 1)[-1]
+        return context
+
     def play_background(self, selected, device):
         uri = selected['uri']
         try:
@@ -112,7 +119,9 @@ class BackgroundPlayback:
             raise f.Failure('MPD is still active; background music was not started.')
         self.background_message = 'Background music requested; checking playback.'
         started_uri = self.play_background(saved, self.device)
-        self.background_pending = {'uri': started_uri, 'device': self.device, 'deadline': time.monotonic()+8,
+        self.background_pending = {'uri': started_uri, 'device': self.device, 'deadline': time.monotonic()+18, 'grace':time.monotonic()+4,
+                                   'previous_track':(state.get('item') or {}).get('uri'),
+                                   'previous_progress':state.get('progress_ms') or 0,
                                    'fallback': started_uri != saved['uri']}
         self.idle_ready = False
         self.next_poll = 0
@@ -157,10 +166,21 @@ class BackgroundPlayback:
         if actual and actual != pending['device']:
             self.background_pending = None
             raise f.Failure('Player changed while restoring background music. Handoff stopped.')
-        if (actual == pending['device'] and state.get('is_playing')
-                and (state.get('context') or {}).get('uri') == pending['uri']):
+        context = self.normalized_context(state)
+        item = (state.get('item') or {}).get('uri')
+        playing = actual == pending['device'] and state.get('is_playing') and item
+        progressed = False
+        if playing and not context:
+            sample = (item, state.get('progress_ms') or 0)
+            first = pending.setdefault('sample', sample)
+            fresh = first[0] != pending.get('previous_track') or first[1] < pending.get('previous_progress', 0)
+            progressed = fresh and sample[0] == first[0] and sample[1] > first[1]
+        else:
+            pending.pop('sample', None)
+        if playing and (context == pending['uri'] or (not context and progressed and time.monotonic() >= pending.get('grace', pending['deadline']))):
             self.background_pending = None
             self.verified_background_context = (pending['device'], pending['uri'])
+            self.diagnostics.emit('background.resume_confirmed', context_reported=bool(context))
             if not pending.get('fallback'):
                 self.background_message = ''
             return True

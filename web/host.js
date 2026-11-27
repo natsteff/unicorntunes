@@ -121,7 +121,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
             <div class="host-action-row"><div id="host-pause-slot"></div><p id="host-pause-help">Pause audio and stop automatic request handoff.</p></div>
             <div class="host-action-row"><div id="host-skip-slot"></div><p>Play the next request; if none is waiting, advance Spotify.</p></div>
             <div class="host-action-row"><div id="host-stop-slot"></div><p>Stop automatic handoff. Music already playing continues.</p></div>
-            <div class="host-action-row"><button id="host-end-session" type="button" class="secondary">End Session</button><p>Archive queued requests, reset the gathering, and shut down the linked Pine64.</p></div><p id="host-end-status" class="host-shutdown-callout" role="status"></p>
+            <div class="host-action-row"><button id="host-end-session" type="button" class="host-danger">End Session</button><p>Archive queued requests, reset the gathering, and shut down the linked Pine64.</p></div><p id="host-end-status" class="host-shutdown-callout" role="status"></p>
           </div>
         </div>
         <p id="host-background-status" role="status"></p><p id="host-soloist-expiry" role="status"></p>
@@ -310,7 +310,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         $('local-bind').hidden=!!selected&&current.local_player?.device===selected;
         $('host-editing-player').textContent=name?'Editing: '+name:'No player selected';
         $('host-end-session').disabled=!current.device||!current.local_player?.enabled||current.local_player.device!==current.device||
-            selected!==current.device||$('host-end-session').dataset.busy==='true';
+            selected!==current.device||$('host-end-session').dataset.busy==='true'||['waiting','offline'].includes(current.enabled?null:current.shutdown_progress?.[current.device]?.phase);
         renderPlayerCopy(current, selected);
         shuffleControl.checked=shuffleAutosave.draft()?.enabled??(current.player_background_shuffle?.[selected]!==false);
         shuffleAutosave.sync();
@@ -387,7 +387,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         const value=current.player_welcomes?.[selected];
         const inherited=name?'Welcome to '+name:'';
         const draft=welcomeAutosave.draft();
-        welcome.value=draft?.welcome??(value||inherited);
+        welcome.value=draft?.restore?inherited:draft?.welcome??(value||inherited);
         mainMode.checked=modeAutosave.draft()?.enabled??!!current.player_main_headline?.[selected];
         $('host-player-welcome-form').hidden=mainMode.checked;
         const preview=$('host-main-headline-preview');
@@ -396,7 +396,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         if(typeof renderHeadline==='function')renderHeadline(preview,heading||'Main headline is blank.',accent,
             heading==='What should we play next?'&&!accent);
         modeAutosave.sync();
-        welcomeAccent.value=draft?.accent??current.player_accents?.[selected]??'';
+        welcomeAccent.value=draft?.restore?(name||''):draft?.accent??(value?.trim()?(current.player_accents?.[selected]||''):(name||''));
         power.checked=powerAutosave.draft()?.enabled??(current.player_auto_start?.[selected]!==false);
         $('host-player-welcome-current').textContent='Default: '+(inherited||'Unavailable')+' · Current: '+(value||inherited||'Unavailable');
         $('host-player-power-status').textContent=current.boot_start_status?.[selected]?.message||'';
@@ -422,11 +422,24 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         }catch(error){if(device===selectedDevice())status.textContent=error.message;}
         finally{button.disabled=false;}
     };
+    let shutdownRefreshTimer;
     function renderShutdownProgress(current){
-        const status=$('host-end-status'), progress=current.shutdown_progress?.[current.device];
+        const button=$('host-end-session'), status=$('host-end-status');
+        const progress=!current.enabled&&selectedDevice()===current.device?current.shutdown_progress?.[current.device]:null;
+        const ending=button.dataset.busy==='true'||progress?.phase==='waiting';
+        button.textContent=ending?'Ending Session…':progress?.phase==='offline'?'Session Ended':'End Session';
+        button.classList.toggle('is-ending',ending);
+        button.classList.toggle('is-ended',!ending&&progress?.phase==='offline');
+        button.setAttribute('aria-busy',String(ending));
         if(status.dataset.error!=='true'){
-            if(current.enabled)status.textContent='';
+            if(current.enabled&&!ending)status.textContent='';
             else if(progress)status.textContent=progress.message;
+        }
+        if(ending&&!shutdownRefreshTimer){
+            shutdownRefreshTimer=setTimeout(async()=>{
+                shutdownRefreshTimer=null;
+                if(state.host)await refresh();
+            },1200);
         }
     }
     $('host-end-session').onclick=async event=>{
@@ -437,6 +450,8 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         delete status.dataset.error;
         button.dataset.busy='true';
         button.disabled=true;
+        status.textContent='Ending session and requesting shutdown…';
+        renderShutdownProgress(state);
         try{
             await api('/api/host/end-session',{device,confirm:true});
             submitted.clear();

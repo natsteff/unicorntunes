@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import re
+import socket
 import subprocess
 import time
 import threading
@@ -37,6 +38,19 @@ def artwork_thumbnail(raw):
 class RemoteMPD:
     def __init__(self,data,config):
         self.data,self.config=data,config
+
+    def shutdown_reachability(self):
+        host = self.config.get('host', '')
+        port = self.config.get('port', 22)
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{0,252}', host) or type(port) is not int or not 1 <= port <= 65535:
+            return {}
+        try:
+            with socket.create_connection((host,port),timeout=1):
+                return {'reachable':True}
+        except socket.gaierror:
+            return {}
+        except OSError:
+            return {'offline':True}
 
     def call(self,action,**args):
         host=self.config.get('host','');user=self.config.get('user','')
@@ -85,6 +99,7 @@ class LocalPlayback:
         self.soloist_status_due = 0
         self.boot_probe = None
         self.boot_probe_due = 0
+        self.artist_catalog_cache = {}
 
     def local_bound(self):
         return bool(self.local_config.get('enabled') and self.device and self.local_config.get('device')==self.device)
@@ -269,7 +284,7 @@ class LocalPlayback:
         if not current or current.get('phase') != 'waiting':
             return
         elapsed = time.time() - current['accepted_at']
-        if result.get('boot_id'):
+        if result.get('boot_id') or result.get('reachable'):
             current['failures'] = 0
         elif result.get('offline') and elapsed >= 5:
             current['failures'] += 1
@@ -298,14 +313,15 @@ class LocalPlayback:
         if probe or due < self.boot_probe_due or not device or not self.local_config.get('enabled'):
             return
         shutdown = self.meta('shutdown_progress', {}).get(device, {})
-        self.boot_probe_due = due + (5 if shutdown.get('phase') == 'waiting' else 15)
+        self.boot_probe_due = due + (2 if shutdown.get('phase') == 'waiting' else 15)
         connection = self.local
         probe = {'device':device, 'connection':connection}
         self.boot_probe = probe
 
         def read_boot():
             try:
-                probe['result'] = connection.call('boot_status')
+                probe['result'] = (connection.shutdown_reachability() if shutdown.get('phase') == 'waiting'
+                                   else connection.call('boot_status'))
             except f.Failure as error:
                 message = str(error)
                 probe['result'] = {'upgrade_required':'Unknown action' in message,
@@ -551,6 +567,95 @@ class LocalPlayback:
         if route=='/api/host/local-test':return self.local.call('status')
         return None
 
+    def find_artists(self, text, offset):
+        if not text or len(text) > 150 or not 0 <= offset <= 990:
+            raise ValueError('Enter an artist name.')
+        results = self.api.call('/search', params={'q':text, 'type':'artist', 'limit':10, 'offset':offset}).get('artists', {})
+        artists = []
+        for entry in results.get('items', []):
+            if entry and re.fullmatch(r'[A-Za-z0-9]{22}', entry.get('id') or ''):
+                artists.append({'id':entry['id'], 'name':entry.get('name') or 'Unknown artist',
+                                'art':next((image.get('url','') for image in (entry.get('images') or [])), '')})
+        return {'artists':artists, 'items':[], 'more':bool(results.get('next')) and offset < 990,
+                'offset':offset, 'artist_page_size':10, 'total':None}
+
+    def artist_catalog(self, artist_id, query, offset, limit):
+        from web_server import search_options, track
+        if not re.fullmatch(r'[A-Za-z0-9]{22}', artist_id):
+            raise ValueError('Select a valid Spotify artist.')
+        fields = {name:query.get(name, [''])[0].strip() for name in ('track','album','year','exact')}
+        if any(fields[k] for k in ('track','album','year')) or fields['exact']=='1':
+            search_options(dict(query, q=[''], artist=['']))
+        key = (artist_id, *fields.values())
+        now = time.monotonic()
+        cache = self.artist_catalog_cache
+        entry = cache.get(key)
+        if not entry or entry['expires'] <= now:
+            if len(cache) >= 12:
+                cache.pop(next(iter(cache)))
+            entry = cache[key] = {'tracks':[], 'seen':set(), 'albums_seen':set(), 'albums':[],
+                                  'album_offset':0, 'track_offset':0, 'more_albums':True, 'expires':now+900}
+        def more():
+            return bool(entry['albums'] or entry['more_albums'])
+        calls = 0
+        warning = ''
+        try:
+            while len(entry['tracks']) < offset+limit and more() and calls < 6:
+                calls += 1
+                if not entry['albums']:
+                    page = self.api.call('/artists/'+artist_id+'/albums',
+                                         params={'include_groups':'album,single,appears_on,compilation','limit':10,
+                                                 'offset':entry['album_offset']})
+                    entry['album_offset'] += 10
+                    entry['more_albums'] = bool(page.get('next'))
+                    for album in page.get('items', []):
+                        if not album or not re.fullmatch(r'[A-Za-z0-9]{22}', album.get('id') or '') or album['id'] in entry['albums_seen']:
+                            continue
+                        entry['albums_seen'].add(album['id'])
+                        year = (album.get('release_date') or '')[:4]
+                        bounds = fields['year'].split('-')
+                        if fields['year'] and not bounds[0] <= year <= bounds[-1]:
+                            continue
+                        if fields['album'].casefold() not in (album.get('name') or '').casefold():
+                            continue
+                        entry['albums'].append(album)
+                    continue
+                album = entry['albums'][0]
+                page = self.api.call('/albums/'+album['id']+'/tracks',
+                                     params={'limit':10,'offset':entry['track_offset']})
+                for item in page.get('items', []):
+                    if not item or item.get('is_playable') is False or item.get('restrictions') or not any(
+                        artist.get('id') == artist_id for artist in (item.get('artists') or [])
+                    ):
+                        continue
+                    uri = item.get('uri', '')
+                    name = (item.get('name') or '').strip().casefold()
+                    title = fields['track'].casefold()
+                    if (not uri.startswith('spotify:track:') or uri in entry['seen'] or
+                            (fields['exact']=='1' and title != name) or (title and title not in name)):
+                        continue
+                    entry['seen'].add(uri)
+                    entry['tracks'].append(track(dict(item, album=album)))
+                if page.get('next'):
+                    entry['track_offset'] += 10
+                else:
+                    entry['track_offset'] = 0
+                    entry['albums'].pop(0)
+        except f.Failure as error:
+            if not entry['tracks'][offset:offset+limit]:
+                raise
+            warning = 'Spotify did not finish loading this catalog page: ' + str(error)
+        items = entry['tracks'][offset:offset+limit]
+        if len(self.catalog) > 2000:
+            self.catalog.clear()
+        for song in items:
+            song['house_favorite'] = bool(self.db.execute('SELECT 1 FROM favorites WHERE uri=?',(song['uri'],)).fetchone())
+            self.catalog[song['uri']] = song
+        return {'items':items, 'total':None if more() else len(entry['tracks']), 'offset':offset,
+                'more':len(entry['tracks']) > offset+limit or more(),
+                'continue_page':len(entry['tracks']) < offset+limit and more(),
+                'warning':warning, 'artist_catalog':True}
+
     def mixed_search(self, query, *, host=False):
         from web_server import search_options, track
         offset = int(query.get('offset', ['0'])[0])
@@ -565,6 +670,13 @@ class LocalPlayback:
         mode = query.get('mode', [''])[0]
         if mode not in ('', 'track', 'artist'):
             raise ValueError('Invalid quick search filter.')
+        if mode == 'artist' and source != 'local':
+            artist_id = query.get('artist_id', [''])[0]
+            if artist_id:
+                return self.artist_catalog(artist_id, query, offset, limit)
+            if query.get('artist', [''])[0].strip():
+                raise ValueError('Use either the quick artist filter or the advanced artist field.')
+            return self.find_artists(query.get('q', [''])[0].strip(), offset)
         if mode and query.get('q', [''])[0].strip():
             if query.get(mode, [''])[0].strip():
                 raise ValueError('Use either the quick filter or the matching advanced field.')
