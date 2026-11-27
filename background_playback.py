@@ -21,9 +21,35 @@ def context_uri(value):
 
 
 class BackgroundPlayback:
+    def background_default(self, device):
+        defaults = self.meta('background_defaults', {})
+        if device in defaults:
+            return defaults[device]
+        legacy = self.meta('background_context', {})
+        return legacy if legacy.get('device') == device else {}
+
+    def effective_background(self, device):
+        override = self.meta('background_override', {})
+        if override.get('gathering') == self.meta('gathering') and override.get('uri'):
+            return dict(override, device=device, source='gathering')
+        return dict(self.background_default(device), source='player')
+
     def background_state(self):
-        saved = self.meta('background_context', {})
-        return dict(saved, armed=bool(self.background_armed), message=self.background_message)
+        defaults = dict(self.meta('background_defaults', {}))
+        legacy = self.meta('background_context', {})
+        if legacy.get('device'):
+            defaults.setdefault(legacy['device'], legacy)
+        effective = self.effective_background(self.device)
+        return dict(effective, defaults=defaults, armed=bool(self.background_armed), message=self.background_message)
+
+    def save_background_default(self, device, uri, explicit):
+        defaults = self.meta('background_defaults', {})
+        legacy = self.meta('background_context', {})
+        if legacy.get('device'):
+            defaults.setdefault(legacy['device'], legacy)
+        defaults[device] = {'uri': uri, 'device': device, 'explicit': explicit}
+        self.set_meta('background_defaults', defaults)
+        self.set_meta('background_context', defaults[device])
 
     def capture_background(self, state):
         """Only remember a real context on our selected player, never queue guesses."""
@@ -34,11 +60,11 @@ class BackgroundPlayback:
         uri = (state.get('context') or {}).get('uri', '')
         if not CONTEXT.fullmatch(uri):
             return
-        saved = self.meta('background_context', {})
+        saved = self.background_default(self.device)
         # An explicit host choice remains authoritative for this destination.
-        if saved.get('device') == self.device and saved.get('explicit'):
+        if saved.get('explicit') or self.effective_background(self.device)['source'] == 'gathering':
             return
-        self.set_meta('background_context', {'uri': uri, 'device': self.device, 'explicit': False})
+        self.save_background_default(self.device, uri, False)
         self.background_message = ''
 
     def arm_background(self):
@@ -53,10 +79,10 @@ class BackgroundPlayback:
         actual = (state.get('device') or {}).get('id')
         if state.get('is_playing') or (actual and actual != self.device):
             return
-        saved = self.meta('background_context', {})
+        saved = self.effective_background(self.device)
         self.background_armed = False  # One attempt, including timeout/403; never retry blindly.
         if saved.get('device') != self.device or not CONTEXT.fullmatch(saved.get('uri', '')):
-            self.background_message = 'Choose background music in Playback to continue after requests. Player remains ready for requests.'
+            self.background_message = 'Choose background music in Player settings to continue after requests. Player remains ready for requests.'
             return
         if self.local_bound() and self.local.call('status').get('state') in ('play', 'pause'):
             raise f.Failure('MPD is still active; background music was not started.')

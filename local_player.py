@@ -105,6 +105,7 @@ class LocalPlayback:
             self.art_errors.clear()
             self.db.execute('DELETE FROM local_tracks')
             self.db.executemany('INSERT INTO local_tracks VALUES(?,?)',[(s['uri'],json.dumps(s)) for s in cleaned])
+        self.set_meta('local_index_needs_scan', False)
         self.local_error=''
         response={'count':len(cleaned)}
         try:
@@ -113,7 +114,7 @@ class LocalPlayback:
         except f.Failure as error:response['loudness_error']=str(error)
         return response
 
-    def local_search(self,query,offset):
+    def local_search(self,query,offset,limit):
         terms=query.get('q',[''])[0].strip().casefold().split()
         title=query.get('track',[''])[0].strip().casefold();artist=query.get('artist',[''])[0].strip().casefold()
         album=query.get('album',[''])[0].strip().casefold();year=query.get('year',[''])[0].strip()
@@ -134,7 +135,7 @@ class LocalPlayback:
             song['house_favorite']=bool(self.db.execute('SELECT 1 FROM favorites WHERE uri=?',(song['uri'],)).fetchone())
             matches.append(song)
         matches.sort(key=lambda s:(s['name'].casefold(),s['uri']))
-        return matches[offset:offset+10],len(matches)>offset+10
+        return matches[offset:offset+limit],len(matches)
 
     def local_artwork(self, digest):
         # Artwork SSH work must never hold the playback worker's global lock.
@@ -252,6 +253,8 @@ class LocalPlayback:
             if config.get('normalization_enabled'):
                 config['normalized_volume']=int(body.get('volume',100))
                 config['volume']=self.local_config.get('volume',50)
+            if any(config.get(key) != self.local_config.get(key) for key in ('host', 'user', 'port', 'device')):
+                self.set_meta('local_index_needs_scan', True)
             f.private_write(self.data/'local-player.json',config)
             self.local_config=config;self.local=RemoteMPD(self.data,config)
             return {'ok':True}
@@ -259,33 +262,66 @@ class LocalPlayback:
         if route=='/api/host/local-test':return self.local.call('status')
         return None
 
-    def mixed_search(self, query):
+    def mixed_search(self, query, *, host=False):
         from web_server import search_options, track
         offset = int(query.get('offset', ['0'])[0])
+        limit = int(query.get('limit', ['20'])[0])
         source = query.get('source', ['all'])[0]
-        if source not in ('all', 'spotify', 'local') or not 0 <= offset <= 990:
+        if source not in ('all', 'spotify', 'local') or not 0 <= offset <= 1000000 or limit not in (10, 20, 30):
             raise ValueError('Invalid search source or page.')
+        device = query.get('player', [''])[0]
+        if device and (not host or source != 'local' or not self.local_config.get('enabled')
+                       or self.local_config.get('device') != device):
+            raise f.Failure('No local library is linked to this player.')
         blank = not any(query.get(k, [''])[0].strip() for k in ('q', 'track', 'artist', 'album', 'year'))
         if blank and source != 'local':
             raise ValueError('Enter search text, or choose Local files to browse the library.')
-        # Validate filters once for both providers, including exact-title and year syntax.
         text, exact = search_options(query) if not blank else ('', None)
-        items, more, warning = [], False, ''
-        if source != 'spotify' and self.local_config.get('enabled'):
-            items, more = self.local_search(query, offset)
-        if source != 'local':
+        items, local_total, warning = [], 0, ''
+        index_ready = self.local_config.get('enabled') and not self.meta('local_index_needs_scan', False)
+        if source != 'spotify' and index_ready:
+            items, local_total = self.local_search(query, offset, limit)
+        more = local_total > offset + limit
+        total = local_total if source == 'local' else None
+        spotify_offset = max(0, offset - local_total)
+        if source != 'local' and len(items) == limit and offset + limit == local_total:
+            # Probe the first Spotify page so Next reflects actual availability.
             try:
-                result = self.api.call('/search', params={'q':text,'type':'track','limit':10,'offset':offset}).get('tracks', {})
-                items += [track(t) for t in result.get('items', []) if exact is None or t.get('name', '').strip().casefold() == exact]
-                more = more or bool(result.get('next'))
+                spotify = self.api.call('/search', params={'q':text,'type':'track','limit':1,'offset':0}).get('tracks', {})
+                more = bool(spotify.get('items'))
+                if exact is None and type(spotify.get('total')) is int:
+                    total = local_total + spotify['total']
             except f.Failure:
-                if not items: raise
                 warning = 'Spotify search is unavailable. Showing matching local files.'
-        if len(self.catalog) > 2000: self.catalog.clear()
+        if source != 'local' and len(items) < limit and spotify_offset <= 990:
+            try:
+                remaining = limit - len(items)
+                while remaining and spotify_offset <= 990:
+                    batch = min(remaining, 10)
+                    result = self.api.call('/search', params={'q':text,'type':'track','limit':batch,'offset':spotify_offset}).get('tracks', {})
+                    items += [track(t) for t in result.get('items', []) if t and (exact is None or t.get('name', '').strip().casefold() == exact)]
+                    remaining -= batch
+                    spotify_offset += batch
+                    more = bool(result.get('next')) and spotify_offset <= 990
+                    if exact is None and type(result.get('total')) is int:
+                        total = local_total + result['total']
+                    if not more:
+                        break
+            except f.Failure:
+                if not items:
+                    raise
+                total, more = None, False
+                warning = 'Spotify search is unavailable. Showing the results retrieved so far.'
+        if source == 'local' and not index_ready:
+            warning = ('Scan the linked local library in Music library before browsing.'
+                       if self.local_config.get('enabled') else 'The local library is unavailable.')
+            total = None
+        if len(self.catalog) > 2000:
+            self.catalog.clear()
         for song in items:
-            song['house_favorite'] = bool(self.db.execute('SELECT 1 FROM favorites WHERE uri=?', (song['uri'],)).fetchone())
+            song['house_favorite'] = bool(self.db.execute('SELECT 1 FROM favorites WHERE uri=?',(song['uri'],)).fetchone())
             self.catalog[song['uri']] = song
-        return {'items':items, 'more':more and offset < 990, 'offset':offset, 'warning':warning}
+        return {'items':items, 'more':more, 'offset':offset, 'total':total, 'warning':warning}
 
     def start_local_request(self, row, spotify):
         if not self.local_bound():
@@ -333,9 +369,14 @@ class LocalPlayback:
             self.db.commit()
             raise
 
-    def owned_local_status(self):
+    def owned_local_status(self, *, allow_stopped_without_item=False):
         status = self.local.call('status')
         active = self.local_active
+        # MPD can discard the current item when the final track ends. The
+        # caller must still verify that playback was observed near the end.
+        if (allow_stopped_without_item and status.get('state') == 'stop'
+                and status.get('uri') is None and status.get('song_id') is None):
+            return status
         if active and (status.get('uri') != active['uri'] or
                        (active.get('song_id') is not None and str(status.get('song_id')) != active['song_id'])):
             raise f.Failure('MPD track ownership changed. Check the local player before reconciling.')
@@ -356,7 +397,7 @@ class LocalPlayback:
 
     def poll_local(self):
         active = self.local_active
-        status = self.owned_local_status()
+        status = self.owned_local_status(allow_stopped_without_item=True)
         if active.get('starting'):
             raise f.Failure('Local start is unresolved. Check MPD and reconcile the request before restarting.')
         row = self.db.execute('SELECT * FROM songs WHERE id=?',(active['id'],)).fetchone()
@@ -370,8 +411,10 @@ class LocalPlayback:
         actual = (spotify.get('device') or {}).get('id')
         if spotify.get('is_playing') or (actual and actual != self.device):
             # Never stop someone else's MPD item; ownership was verified above.
-            self.local.call('pause')
-            raise f.Failure('Spotify playback resumed or moved during a local track. MPD paused; check both players before restarting.')
+            if status['state'] != 'stop':
+                self.local.call('pause')
+                raise f.Failure('Spotify playback resumed or moved during a local track. MPD paused; check both players before restarting.')
+            raise f.Failure('Spotify playback resumed or moved during a local track. Check both players before restarting.')
         if status.get('error'): raise f.Failure('MPD reports an error: ' + status['error'])
         song = json.loads(row['metadata'])
         self.now = dict(song, playing=status['state']=='play', progress_ms=status.get('progress_ms',0), normalized=bool(status.get('normalized')))

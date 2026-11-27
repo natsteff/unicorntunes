@@ -378,32 +378,46 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             f.private_write(self.data / 'settings.json', {'device':device,'accepting':accepting})
             self.enabled, self.error, self.reason, self.next_poll = True, '', '', 0
             return
+        locked = self.db.execute("SELECT 1 FROM songs WHERE state IN ('accepted','queued','playing')").fetchone()
+        startup_context = None if seed_local or locked else self.effective_background(device).get('uri')
+        start_waiting_spotify = bool(seed_local and not locked and not seed_local['uri'].startswith('local:'))
+        if startup_context:
+            current = self.api.call('/me/player')
+            if (current.get('device') or {}).get('id') == device and current.get('is_playing'):
+                startup_context = None
         # A remote mutation may change playback even if its response is lost.
         # Stop dispatch until the selected target and playing state are observed.
         self.enabled = False
         self.reason = 'Starting selected player.'
         try:
-            self.api.call('/me/player', 'PUT', {'device_ids': [device], 'play': True})
+            if startup_context:
+                self.api.call('/me/player/play', 'PUT', {'context_uri': startup_context}, {'device_id': device})
+            else:
+                self.api.call('/me/player', 'PUT', {'device_ids': [device], 'play': not start_waiting_spotify})
             observed = {}
             for attempt in range(4):
                 observed = self.api.call('/me/player')
-                if (observed.get('device') or {}).get('id') == device:
+                if ((observed.get('device') or {}).get('id') == device and
+                        (not startup_context or (observed.get('is_playing') and
+                         (observed.get('context') or {}).get('uri') == startup_context))):
                     break
                 time.sleep(0.5)
             if (observed.get('device') or {}).get('id') != device:
                 raise f.Failure('Spotify accepted the transfer but the player has not become active. Handoff remains stopped; try Start again after checking player status.')
+            if startup_context and (not observed.get('is_playing') or (observed.get('context') or {}).get('uri') != startup_context):
+                raise f.Failure('Saved background playback could not be confirmed on this player.')
             previous_device = self.device
             self.device = device
             self.capture_background(observed)
             self.device = previous_device
             seed = None
             if not observed.get('is_playing'):
-                if observed.get('item'):
+                if observed.get('item') and not start_waiting_spotify:
                     self.api.call('/me/player/play', 'PUT', {}, {'device_id': device})
                 else:
                     seed = next((r for r in self.queue('') if r['state'] == 'waiting'), None)
                     if not seed:
-                        raise f.Failure('Player activated. Request a song in UnicornTunes, then press Start session to begin playback.')
+                        raise f.Failure('Player available. Choose background music in Player settings or request a song, then start the session.')
                     if self.db.execute("SELECT id FROM songs WHERE state IN ('accepted','queued')").fetchone():
                         raise f.Failure('An earlier handoff remains unresolved. Reconcile it before starting a new track.')
                     if seed['uri'].startswith('local:'):
@@ -429,6 +443,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             for attempt in range(4):
                 observed = self.api.call('/me/player')
                 valid = ((observed.get('device') or {}).get('id') == device and observed.get('is_playing')
+                         and (not startup_context or (observed.get('context') or {}).get('uri') == startup_context)
                          and not observed.get('shuffle_state') and observed.get('repeat_state') in (None, 'off'))
                 if valid:
                     break
@@ -630,10 +645,19 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         elif route == '/api/host/background':
             from background_playback import context_uri
             device = str(body.get('device', ''))
-            if not device or device != self.device:
-                raise f.Failure('Start the session on this player before choosing its background music.')
             uri = context_uri(body.get('uri'))
-            self.set_meta('background_context', {'uri': uri, 'device': device, 'explicit': True})
+            scope = body.get('scope', 'player')
+            if scope == 'gathering':
+                self.set_meta('background_override', {'uri': uri, 'gathering': self.meta('gathering')} if uri else {})
+            elif scope == 'player':
+                if not device or (device != self.device and not any(
+                    row.get('id') == device and not row.get('is_restricted')
+                    for row in self.api.call('/me/player/devices').get('devices', [])
+                )):
+                    raise f.Failure('Choose an available player before saving its background music.')
+                self.save_background_default(device, uri, True)
+            else:
+                raise ValueError('Invalid background scope.')
             self.background_message = ''
         elif route == '/api/host/logout':
             session['host'] = False
@@ -759,7 +783,7 @@ def handler(app):
                         elif parsed.path == '/api/search':
                             app.limit(('search', sid), 15)
                             app.limit(('search-ip', self.client_address[0]), 60)
-                            payload = app.mixed_search(query)
+                            payload = app.mixed_search(query, host=session['host'])
                         elif parsed.path == '/api/host/devices':
                             if not session['host']:
                                 raise PermissionError('Host access required.')

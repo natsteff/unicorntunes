@@ -165,6 +165,35 @@ class BackgroundTests(unittest.TestCase):
         for value in ('https://example.com/playlist/x','spotify:track:'+'a'*22,'https://open.spotify.com/playlist/x'):
             with self.assertRaises(f.Failure):context_uri(value)
 
+    def test_cold_start_uses_gathering_override_and_restore_preserves_player_default(self):
+        self.save_background()
+        override = 'spotify:playlist:' + 'g'*22
+        self.app.action(self.sid, '/api/host/background', {'scope':'gathering', 'uri':override})
+        self.assertFalse(self.events)
+        self.spotify.state.update(is_playing=False, item=None, shuffle_state=False, repeat_state='off')
+        original = self.spotify.call
+
+        def call(path, method='GET', payload=None, params=None):
+            if path == '/me/player/play' and method == 'PUT' and payload.get('context_uri'):
+                self.events.append(('spotify', path, method, payload))
+                self.spotify.state.update(is_playing=True, item={'uri': A}, context={'uri': payload['context_uri']})
+                return {}
+            return original(path, method, payload, params)
+
+        with patch.object(self.spotify, 'call', side_effect=call):
+            self.app.start_session('speaker', True)
+        self.assertTrue(self.app.enabled)
+        self.assertEqual(self.spotify.state['context']['uri'], override)
+        self.app.action(self.sid, '/api/host/background', {'scope':'gathering', 'uri':''})
+        self.assertEqual(self.app.effective_background('speaker')['uri'], CONTEXT)
+
+    def test_player_defaults_preserve_legacy_and_are_independent(self):
+        self.save_background()
+        other = 'spotify:playlist:' + 'o'*22
+        self.app.save_background_default('other', other, True)
+        self.assertEqual(self.app.effective_background('speaker')['uri'], CONTEXT)
+        self.assertEqual(self.app.effective_background('other')['uri'], other)
+
     def test_repeated_snapshot_warns_without_inventing_or_removing_entries(self):
         with patch.object(self.spotify,'call',return_value={'queue':[self.spotify.state['item']]*4}):
             self.app.refresh_upcoming()

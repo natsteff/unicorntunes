@@ -74,7 +74,7 @@ Local files use their available tags, with the filename as the title fallback. S
 
 ### First playback test
 
-1. Keep the local trial volume conservative and verify **FoxTunes** is the linked Spotify device.
+1. Keep the local trial volume conservative and verify that the selected Spotify Connect device (for example, **UnicornPlayer - Garage**) is linked to the local player.
 2. Search for a Spotify track, request it, then request one short uploaded file using **Local files only**.
 3. Request another Spotify track after the local one. Listen for Spotify → local → Spotify, with no simultaneous audio.
 4. Let the requests run out, then add another local or Spotify request and verify it starts.

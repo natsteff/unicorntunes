@@ -85,6 +85,17 @@ class MixedPlaybackTests(unittest.TestCase):
         self.assertEqual(result['items'][0]['source'],'local')
         self.assertFalse(any(e[0]=='spotify' for e in self.events))
 
+    def test_selected_player_browse_uses_link_and_exact_total(self):
+        query = {'source':['local'], 'player':['speaker'], 'limit':['20']}
+        result = self.app.mixed_search(query, host=True)
+        self.assertEqual((result['total'], result['more']), (1, False))
+        self.assertEqual(result['items'][0]['uri'], LOCAL)
+        with self.assertRaises(f.Failure):
+            self.app.mixed_search(query)
+        query['player'] = ['other']
+        with self.assertRaises(f.Failure):
+            self.app.mixed_search(query, host=True)
+
     def test_filters_and_spotify_search_failure(self):
         self.assertEqual(self.app.mixed_search({'q':['Song'],'source':['local'],'year':['2021']})['items'],[])
         self.spotify.fail_search=True
@@ -150,8 +161,10 @@ class MixedPlaybackTests(unittest.TestCase):
 
     def test_manual_early_stop_does_not_advance(self):
         self.start();self.app.poll(force=True);self.request(SPOTIFY)
-        self.mpd.state['state']='stop';self.app.poll(force=True)
+        self.mpd.state.update(state='stop', uri=None, song_id=None)
+        self.app.poll(force=True)
         self.assertFalse(self.app.enabled)
+        self.assertIn('before an observed end', self.app.error)
         self.assertEqual(self.row(SPOTIFY)['state'],'waiting')
 
     def test_pause_and_skip_control_correct_source(self):
@@ -197,6 +210,21 @@ class MixedPlaybackTests(unittest.TestCase):
         self.assertFalse(self.spotify.state['is_playing'])
         self.request(SPOTIFY);self.finish()
         self.assertTrue(self.spotify.state['is_playing'])
+
+    def test_mpd_without_current_item_at_end_advances_to_next_local_request(self):
+        other = dict(SONG, uri='local:'+'c'*64, name='Second local')
+        self.app.db.execute('INSERT INTO local_tracks VALUES(?,?)', (other['uri'], json.dumps(other)))
+        self.app.db.commit()
+        self.start()
+        self.request(other['uri'])
+        self.mpd.state['progress_ms'] = 57000
+        self.app.poll(force=True)
+        self.mpd.state.update(state='stop', uri=None, song_id=None, progress_ms=0)
+        self.app.poll(force=True)
+        self.assertEqual(self.row()['state'], 'past')
+        self.assertEqual(self.app.local_active['uri'], other['uri'])
+        self.assertEqual(self.events.count(('mpd', 'play')), 2)
+        self.assertTrue(self.app.enabled)
 
     def test_restart_preserves_local_ownership_but_disables_dispatch(self):
         self.start();f.private_write(Path(self.temp.name)/'settings.json',{'device':'speaker','accepting':True});self.app.db.close()

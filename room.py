@@ -379,7 +379,11 @@ class RoomFeatures(RequestHistory):
             owner = self.db.execute("SELECT s.requested_by FROM songs s JOIN request_attempts a ON a.song=s.id WHERE s.uri=? AND s.state='playing' AND a.confirmed=1 ORDER BY s.id DESC LIMIT 1", (now['uri'],)).fetchone()
             if owner:
                 now['requested_by'] = owner[0] or SHY
-        return {'background_music': self.background_state() if self.sessions.get(sid, {}).get('host') else None, 'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
+        host = self.sessions.get(sid, {}).get('host')
+        player_headlines = self.meta('player_headlines', {})
+        return {'welcome_headline': player_headlines.get(self.device, ''),
+                'player_headlines': player_headlines if host else {},
+                'background_music': self.background_state() if self.sessions.get(sid, {}).get('host') else None, 'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
                 'local_player': dict(self.local_config, count=self.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0]) if self.sessions.get(sid, {}).get('host') else None,
                 'room': self.room, 'version': os.environ.get('UNICORNTUNES_VERSION', '0.3.0-dev'),
                 'spotify_upcoming': self.spotify_upcoming, 'play_id': current['id'] if current else None,
@@ -475,6 +479,20 @@ class RoomFeatures(RequestHistory):
             # Rules affect future selections too. Host can remove newly blocked waiting tracks explicitly.
             f.private_write(self.data / 'room.json', proposal)
             self.room = proposal
+        elif route == '/api/host/player-headline':
+            device = str(body.get('device', ''))
+            if not device or (device != self.device and not any(
+                item.get('id') == device and not item.get('is_restricted')
+                for item in self.api.call('/me/player/devices').get('devices', [])
+            )):
+                raise f.Failure('Choose an available player before saving its welcome heading.')
+            headings = self.meta('player_headlines', {})
+            value = str(body.get('headline', '')).strip()[:300]
+            if value:
+                headings[device] = value
+            else:
+                headings.pop(device, None)
+            self.set_meta('player_headlines', headings)
         elif route == '/api/host/location':
             name, device = str(body.get('name', '')).strip()[:60], str(body.get('device', ''))
             if not name:
@@ -500,6 +518,7 @@ class RoomFeatures(RequestHistory):
             self.db.commit()
             self.set_meta('gathering', self.meta('gathering') + 1)
             self.set_meta('gathering_started', time.time())
+            self.set_meta('background_override', {})
             self.set_meta('selection_count', 0)
             self.set_meta('next_request', None)
         else:

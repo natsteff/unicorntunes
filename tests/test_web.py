@@ -29,7 +29,7 @@ class FakeSpotify:
         if path == '/me/player':
             return self.state
         if path == '/me/player/devices':
-            return {'devices': [{'id': 'speaker', 'name': 'Test speaker', 'is_active': True}]}
+            return {'devices': [{'id': 'speaker', 'name': 'UnicornPlayer - Garage', 'is_active': True}]}
         if path == '/search':
             return {'tracks': {'items': [{'uri': A, 'name': '<script>safe text</script>', 'artists': []}], 'next': 'next'}}
         return {}
@@ -150,11 +150,11 @@ class WebTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as forbidden:
                 request(clients[0], '/api/host/skip', {}, states[0]['csrf'])
             self.assertEqual(forbidden.exception.code, 403)
-            request(clients[0], '/api/search?q=test&offset=10')
+            request(clients[0], '/api/search?q=test&offset=10&limit=10')
             self.assertEqual(self.api.calls[-1][2]['offset'], 10)
             from urllib.parse import urlencode
             options = urlencode({'track': '<SCRIPT>safe text</SCRIPT>', 'artist': 'Example', 'year': '2000-2009', 'exact': '1'})
-            exact = request(clients[0], '/api/search?' + options)
+            exact = request(clients[0], '/api/search?limit=10&' + options)
             self.assertEqual(len(exact['items']), 1)
             self.assertIn('year:2000-2009', self.api.calls[-1][2]['q'])
             no_match = request(clients[0], '/api/search?track=Different&exact=1')
@@ -168,6 +168,10 @@ class WebTests(unittest.TestCase):
             self.assertNotIn('access_token', encoded)
             request(clients[0], '/api/host/login', {'password': self.app.password}, states[0]['csrf'])
             self.assertTrue(request(clients[0], '/api/state')['host'])
+            self.assertEqual(
+                request(clients[0], '/api/host/devices')['devices'],
+                [{'id': 'speaker', 'name': 'UnicornPlayer - Garage', 'is_active': True}],
+            )
             self.assertFalse(request(clients[0], '/api/search?q=test')['items'][0]['house_favorite'])
             request(clients[0], '/api/host/favorite', {'uri': A}, states[0]['csrf'])
             self.assertTrue(request(clients[0], '/api/search?q=test')['items'][0]['house_favorite'])
