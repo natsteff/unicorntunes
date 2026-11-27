@@ -32,7 +32,27 @@ class BackgroundPlayback:
         override = self.meta('background_override', {})
         if override.get('gathering') == self.meta('gathering') and override.get('uri'):
             return dict(override, device=device, source='gathering')
-        return dict(self.background_default(device), source='player')
+        saved = self.background_default(device)
+        if saved.get('uri'):
+            return dict(saved, source='player')
+        return dict(self.meta('house_background', {}), device=device, source='house')
+
+    def play_background(self, selected, device):
+        uri = selected['uri']
+        try:
+            self.api.call('/me/player/play', 'PUT', {'context_uri': uri}, {'device_id': device})
+        except f.Failure as error:
+            fallback = self.meta('house_background', {}).get('uri')
+            if error.status != 404 or error.uncertain or not fallback or fallback == uri:
+                raise
+            # A 404 can also mean the device disappeared. Verify it is still idle and selected.
+            state = self.api.call('/me/player')
+            if state.get('is_playing') or (state.get('device') or {}).get('id') != device:
+                raise
+            self.api.call('/me/player/play', 'PUT', {'context_uri': fallback}, {'device_id': device})
+            self.background_message = 'Preferred background was unavailable. Using the house background playlist.'
+            return fallback
+        return uri
 
     def background_state(self):
         defaults = dict(self.meta('background_defaults', {}))
@@ -40,14 +60,17 @@ class BackgroundPlayback:
         if legacy.get('device'):
             defaults.setdefault(legacy['device'], legacy)
         effective = self.effective_background(self.device)
-        return dict(effective, defaults=defaults, armed=bool(self.background_armed), message=self.background_message)
+        return dict(effective, defaults=defaults, override=self.meta('background_override', {}),
+                    house=self.meta('house_background', {}), armed=bool(self.background_armed), message=self.background_message)
 
-    def save_background_default(self, device, uri, explicit):
+    def save_background_default(self, device, uri, explicit, name=''):
         defaults = self.meta('background_defaults', {})
         legacy = self.meta('background_context', {})
         if legacy.get('device'):
             defaults.setdefault(legacy['device'], legacy)
         defaults[device] = {'uri': uri, 'device': device, 'explicit': explicit}
+        if name:
+            defaults[device]['name'] = name
         self.set_meta('background_defaults', defaults)
         self.set_meta('background_context', defaults[device])
 
@@ -62,7 +85,8 @@ class BackgroundPlayback:
             return
         saved = self.background_default(self.device)
         # An explicit host choice remains authoritative for this destination.
-        if saved.get('explicit') or self.effective_background(self.device)['source'] == 'gathering':
+        effective = self.effective_background(self.device)
+        if saved.get('explicit') or (effective.get('uri') and effective['source'] in ('gathering', 'house')):
             return
         self.save_background_default(self.device, uri, False)
         self.background_message = ''
@@ -87,8 +111,9 @@ class BackgroundPlayback:
         if self.local_bound() and self.local.call('status').get('state') in ('play', 'pause'):
             raise f.Failure('MPD is still active; background music was not started.')
         self.background_message = 'Background music requested; checking playback.'
-        self.api.call('/me/player/play', 'PUT', {'context_uri': saved['uri']}, {'device_id': self.device})
-        self.background_pending = {'uri': saved['uri'], 'device': self.device, 'deadline': time.monotonic()+8}
+        started_uri = self.play_background(saved, self.device)
+        self.background_pending = {'uri': started_uri, 'device': self.device, 'deadline': time.monotonic()+8,
+                                   'fallback': started_uri != saved['uri']}
         self.idle_ready = False
         self.next_poll = 0
         self.request_playback_refresh()
@@ -107,7 +132,8 @@ class BackgroundPlayback:
         if (actual == pending['device'] and state.get('is_playing')
                 and (state.get('context') or {}).get('uri') == pending['uri']):
             self.background_pending = None
-            self.background_message = ''
+            if not pending.get('fallback'):
+                self.background_message = ''
             return True
         if time.monotonic() >= pending['deadline']:
             self.background_pending = None

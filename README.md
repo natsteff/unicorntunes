@@ -79,16 +79,22 @@ For reproducible deployments, set `FOXTUNES_IMAGE` to a published numbered tag r
 
 Docker updates do not update Soloist, the operating system or the restricted MPD agent. Follow the [agent update procedure](LOCAL_FILES.md#update-the-playback-device) for the required published agent version; review/download the versioned helper and run it as the existing audio user. The helper updates the agent without restarting MPD or Soloist; verify its reported version and test the host connection afterward. Keep the SSH key and host-key pin; do not disable host-key checking to resolve an address change. Back up device service/configuration and paired state privately before Soloist or system upgrades. Use the appropriate vendor binary, retain a working version, and schedule an audio interruption. Test reboot startup without first logging into the device. Do not overwrite a working service or pairing state merely to update the Docker image.
 
+### Pine64 maintenance
+
+The Docker app, Spotify Soloist and the restricted MPD agent are updated separately. **UnicornTunes v0.8.2 needs only the Docker update** for local-library browsing and automatic local-track handoff. Update the restricted agent only when a release lists a required agent version for a feature. Run **Scan library changes** after adding, replacing or removing local music.
+
+Spotify says Soloist builds expire after **90 days**. Use the installed build timestamp to plan the next update and allow time before expiry. For Garage, download the **Linux ARM64** build, replace the executable during a maintenance window and verify playback. See [Spotify’s expiry policy](https://developer.spotify.com/documentation/soloist) and the [Pine64 maintenance procedure](SOLOIST_DEVICE_SETUP.md#update-spotify-soloist).
+
 ## Volume adjustment and distortion
 
 These controls act at different stages. A high percentage is not a loudness target, and increasing every stage can cause clipping before the final speaker control can reduce it.
 
 | Stage | Where to adjust | Effect and persistence |
 | --- | --- | --- |
-| Spotify/Soloist stream | Spotify Connect volume, or the playback device's audio-session stream controls | Spotify audio only. Runtime stream IDs and levels can change when Soloist restarts; verify startup configuration and actual restored level. UnicornTunes currently has no Spotify volume slider. |
-| Device output/sink | Playback device audio settings, or `pactl` as its audio service user | Overall output for streams routed to that sink, potentially including both Spotify and MPD. Connecting another output can change routing; confirm the actual sink. Reboot persistence depends on the installed audio setup. |
-| MPD manual local volume | Host desk → Music library → Local-file volume → Apply local volume | Local files only; does not change Spotify or the amplifier. Saved in UnicornTunes. With automatic levels enabled, calculated per-track levels apply instead; use the loudness target/reference controls for calibration. |
-| Cached loudness matching | Music library → library/loudness maintenance | Measures original local files and applies per-track MPD software volume. Settings/cache persist; changed files need analysis. It cannot boost above unity or guarantee every target is reachable. |
+| Spotify/Soloist stream | Spotify Connect volume, or the playback device's audio-session stream controls | Spotify audio only. Runtime stream IDs and levels can change when Soloist restarts; verify startup configuration and actual restored level. Host desk → Player settings → Volume controls can set the level if Spotify reports volume support for the selected player. |
+| Device output/sink | Host desk → Player settings → Volume controls, or `pactl` as the audio user | Overall output for streams routed to that sink, potentially including both Spotify and MPD. Connecting another output can change routing; confirm the actual sink. The web control requires agent 8 and a linked PulseAudio player. Reboot persistence depends on the installed audio setup. |
+| MPD manual local volume | Host desk → Player settings → Volume controls → Apply local volume | Local files only; does not change Spotify or the amplifier. Saved in UnicornTunes. With automatic levels enabled, calculated per-track levels apply instead; use the loudness target/reference controls for calibration. |
+| Cached loudness matching | Player settings → Volume controls → Local library scan & loudness matching | Measures original local files and applies per-track MPD software volume. Settings/cache persist; changed files need analysis. It cannot boost above unity or guarantee every target is reachable. |
 | Final speaker/amplifier | Physical output device | Listening-room level. Turn it down before changing upstream levels; it cannot undo distortion already introduced upstream. |
 
 A Spotify desktop app is not needed for routine playback. For PulseAudio installations, sign in as the existing audio service user on the playback device and inspect routing first:
@@ -126,13 +132,13 @@ See [SOLOIST_DEVICE_SETUP.md](SOLOIST_DEVICE_SETUP.md) for the Linux/Soloist/aud
 
 **Stop session** stops new request handoffs while the current music continues. **Pause playback** pauses audio and stops handoff. When the player is confirmed paused, the button becomes **Resume playback**, which resumes audio only; choose **Start session** separately to enable requests. **Skip to next request** respects the protected queue and verifies the resulting playback. Restarting the container preserves data but always leaves handoff stopped until the host starts the session again.
 
-In **Playback**, select the player you want to configure. In **Player settings**, save a Spotify playlist, album or artist as that player's default. **Room & gathering** can override the default for the current gathering. **Restore player default** clears the override, and **New gathering** also clears it. Existing saved contexts are kept. Saving settings does not start audio.
+In **Playback**, select the player you want to configure. In **Player settings**, save a Spotify playlist, album or artist as that player's default. **Gathering** can override the default for the current gathering. **Restore player default** clears the override, and **New gathering** also clears it. Existing saved contexts are kept. Saving settings does not start audio.
 
 On an explicit **Start session** with a player that is idle and a clear request queue, UnicornTunes starts the saved background context when configured. Waiting requests take priority, and when the final request ends, UnicornTunes tries to restore the gathering override or player default. If there is no usable context, the host is prompted to choose one. An observed playback failure still requires host review.
 
 To start a session, sign into the Host desk, power on the player and speakers, refresh the player list if needed, and choose the correct player. Check the account shown in **Player & session**, then start and verify both **Running** and audible music. The host can open **How to Start a Session** for these steps and **Setup & troubleshooting** to check authorization and player health. Open the guest page or share the join QR once playback is ready.
 
-**UnicornTunes settings** holds the app-wide guest wording and stats timezone. **Player settings** holds saved locations, the local player connection and volume, background defaults and an optional player-specific welcome heading. A blank player heading inherits the app-wide heading. **Browser Local Files** browses the indexed library linked to the selected player. Search starts at 20 results per page and shows the matching total when provided.
+**UnicornTunes settings** holds the app-wide guest wording and stats timezone. **Player settings** holds saved locations, the local player connection and volume, background defaults and an optional player-specific welcome heading. A blank player heading inherits the app-wide heading. **Browse Local Files** browses the indexed library linked to the selected player. Search starts at 20 results per page and shows the matching total when provided.
 
 An enabled session stays ready after observed playback exhausts: the next new request starts automatically. Host Pause/Stop remains authoritative; the worker does not restart an arbitrary mid-track pause.
 
@@ -142,7 +148,7 @@ The host desk opens on **Playback**, with session status, now playing, the curre
 
 Start is shown when stopped; Stop handoff is disabled when already stopped. During a running session, the start control appears only when changing the player or request settings. Playback actions request an immediate worker check followed by a short burst of faster checks; Spotify can still take time to reflect a change.
 
-Use **Music library** for guest playlist selection, local-file volume and library/loudness maintenance. **Room & gathering** contains queue rules, guest wording, New gathering and history reset. New gathering archives waiting requests and resets event fairness/Tonight stats; it is separate from restarting playback. **Setup & troubleshooting** holds Spotify authorization, the local-player connection, health/recovery and saved locations. Signing out leaves playback unchanged.
+Use **Music library** for guest playlist selection, local-file volume and library/loudness maintenance. **Gathering** contains queue rules, guest wording, New gathering and history reset. New gathering archives waiting requests and resets event fairness/Tonight stats; it is separate from restarting playback. **Setup & troubleshooting** holds Spotify authorization, the local-player connection, health/recovery and saved locations. Signing out leaves playback unchanged.
 
 ## Guest experience
 
@@ -266,3 +272,9 @@ Structured JSON diagnostics go to container stdout. Run `docker compose logs --s
 Under **Setup & troubleshooting → Playback diagnostics**, Download diagnostic report exports the most recent 200 events, up to five pre-failure snapshots and current sanitized state. Snapshots include up to 100 active requests. Reports omit account/guest names, song titles, search queries, raw Spotify bodies/errors, device names/addresses, tokens, cookies, passwords and SSH paths/keys. Track, context and player identifiers are salted hashes consistent within one running process. They change after restart. Reports still contain activity timestamps, internal request IDs and playback timing; review before sharing.
 
 In-memory reports reset when the container restarts; Docker logs follow the existing Compose rotation limit (three files of 5 MB). Recreating/removing the container can discard its old Docker logs. Download a report or save reviewed logs **before** restarting/updating during an incident. These diagnostics do not collect raw Soloist/Pine64 journals, restart the player, retry failed playback commands or change request scheduling. Capture the report while the fault is present, then compare event correlation IDs, timestamps and the failed Spotify operation before choosing recovery actions.
+
+## Upgrade notes for v0.8.3
+
+Run `dcupd` for the Host Desk Home Screen shortcut, background playlist picker, guest wording controls and audio settings. The host can choose a player or gathering playlist by name through **Browse Spotify playlists**. In Music library, **Use for background…** saves to the chosen scope. When no background is configured for the selected player and gathering, Playback shows a warning and a shortcut to the picker.
+
+PulseAudio output volume and managed Soloist updates require restricted agent 8 on the linked Pine64. [Set up scheduled Soloist maintenance](SOLOIST_DEVICE_SETUP.md#scheduled-soloist-maintenance)

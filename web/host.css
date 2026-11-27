@@ -22,3 +22,17 @@
 #host-now{font-size:15px;color:#ddd;margin:0 0 10px;line-height:1.5;overflow-wrap:anywhere}.host-overview.has-warning{border-left-color:#e2b162}@media(max-width:600px){.host-playback-grid .host-card:nth-child(2){order:-1}}
 
 #host-background-form{display:flex;flex-wrap:wrap;gap:10px;align-items:center}#host-background-form label{width:100%}#host-background-uri{min-width:0;flex:1 1 280px;padding:11px;background:#090909;border:1px solid #666;border-radius:6px;color:#fff;font-size:16px}#host-background-status{overflow-wrap:anywhere;color:#ccc;font-size:13px}
+
+.host-volume-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-top:16px}
+.host-volume-grid>form,.host-volume-grid>div{padding:14px;border:1px solid #393939;border-radius:8px;overflow-wrap:anywhere}
+.host-volume-grid h5{font-size:15px;margin:0 0 8px}
+.host-volume-grid input[type=number]{max-width:10rem}
+#host-audio-levels{scroll-margin-top:16px}
+@media(max-width:850px){.host-volume-grid{grid-template-columns:1fr}}
+
+#host .host-settings-form{display:grid;gap:10px;min-width:0;margin-top:12px}
+#host .host-settings-form label,#host .host-settings-form p{margin:0}
+#host .host-settings-form input{width:100%;min-width:0;margin:0}
+#host .host-settings-form button{justify-self:start}
+.headline-preview{color:#fff}.headline-preview em{color:#ef3333}
+#host-background-warning{border-color:#7e6437;color:#ffe1ac}

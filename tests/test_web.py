@@ -139,6 +139,11 @@ class WebTests(unittest.TestCase):
             with client.open(req) as response:
                 return json.load(response)
         try:
+            with clients[0].open(base+'/host') as response:
+                html = response.read().decode()
+            self.assertIn('<title>Host Desk</title>', html)
+            self.assertIn('href="/host.webmanifest"', html)
+            self.assertEqual(request(clients[0], '/host.webmanifest')['start_url'], '/host')
             states = [request(c, '/api/state') for c in clients]
             self.assertEqual(len({s['csrf'] for s in states}), 3)
             with self.assertRaises(urllib.error.HTTPError) as bad:

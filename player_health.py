@@ -1,10 +1,11 @@
 """Narrow playback-device diagnostics and explicit, fixed Soloist recovery."""
 import os
+import re
 import subprocess
 
 
 def command(args):
-    environment=dict(os.environ)
+    environment=dict(os.environ, LC_ALL='C')
     runtime='/run/user/'+str(os.getuid())
     if os.path.isdir(runtime):
         environment.setdefault('XDG_RUNTIME_DIR',runtime)
@@ -44,3 +45,32 @@ def restart_soloist():
     result=command(['systemctl','--user','restart','soloist.service'])
     if result.returncode:raise ValueError('Soloist restart failed. Check its user service on the playback device.')
     return {'restarted':True,'service':soloist_status()['service']}
+
+def output_volume(volume=None, expected_sink=None):
+    """Read or adjust only the playback user's current default PulseAudio sink."""
+    def pactl(*args):
+        try:
+            result = command(['pactl', *args])
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ValueError('PulseAudio is unavailable on the playback device.') from error
+        if result.returncode:
+            raise ValueError('PulseAudio could not access the playback output.')
+        return result.stdout.strip()
+
+    sink = pactl('get-default-sink')
+    if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.:-]{0,254}', sink):
+        raise ValueError('PulseAudio did not report a recognizable output.')
+
+    def read_level():
+        levels = [int(level) for level in re.findall(r'/\s*(\d+)%', pactl('get-sink-volume', sink))]
+        if not levels:
+            raise ValueError('PulseAudio did not report an output level.')
+        return max(levels)
+
+    if volume is not None:
+        if type(volume) is not int or not 0 <= volume <= 100:
+            raise ValueError('Output level must be a whole number from 0 to 100.')
+        if expected_sink != sink:
+            raise ValueError('The default output changed. Refresh the volume controls before applying.')
+        pactl('set-sink-volume', sink, f'{volume}%')
+    return {'sink': sink, 'volume': read_level(), 'muted': pactl('get-sink-mute', sink) == 'Mute: yes'}

@@ -194,6 +194,20 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(self.app.effective_background('speaker')['uri'], CONTEXT)
         self.assertEqual(self.app.effective_background('other')['uri'], other)
 
+    def test_house_fallback_requires_definitive_failure_and_idle_target(self):
+        house = 'spotify:playlist:' + 'h'*22
+        self.app.action(self.sid, '/api/host/background', {'scope':'house','uri':house,'name':'House'})
+        self.assertEqual(self.app.effective_background('speaker')['uri'], house)
+        with patch.object(self.app.api,'call',side_effect=[
+            f.Failure('Unavailable', status=404), {'device':{'id':'speaker'},'is_playing':False}, {}
+        ]) as spotify:
+            self.assertEqual(self.app.play_background({'uri':CONTEXT}, 'speaker'), house)
+            self.assertEqual(spotify.call_args.args[2], {'context_uri':house})
+        with patch.object(self.app.api,'call',side_effect=f.Failure('Timeout', uncertain=True)) as spotify:
+            with self.assertRaises(f.Failure):
+                self.app.play_background({'uri':CONTEXT}, 'speaker')
+            spotify.assert_called_once()
+
     def test_repeated_snapshot_warns_without_inventing_or_removing_entries(self):
         with patch.object(self.spotify,'call',return_value={'queue':[self.spotify.state['item']]*4}):
             self.app.refresh_upcoming()

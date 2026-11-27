@@ -43,3 +43,5 @@
 #install-dialog{width:min(380px,calc(100vw - 32px))}
 #install-dialog h2{margin:0;font-size:22px}
 #install-dialog form{margin-top:16px}
+
+.intro[hidden],[id^="copy-"][hidden]{display:none}

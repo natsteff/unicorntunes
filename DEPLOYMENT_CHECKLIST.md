@@ -14,6 +14,13 @@ These checks require the actual playback device, speakers and guest devices. Aut
 - Confirm background tracks never enter recent history, played rankings or favorite play counts. Existing user-request/vote statistics are intentionally preserved by history cleanup.
 - Reboot the playback device and Docker host deliberately when playback interruption is acceptable. Verify Soloist and MPD services return, the local library/keys/settings persist, and automatic handoff remains stopped until the host starts it.
 
+## Update and maintenance checks
+
+- [ ] Confirm the Docker version after `dcupd` and check the release notes for any required restricted-agent update.
+- [ ] On each Pine64, record the Soloist version and build timestamp from `soloist --version`. Plan maintenance before the 90-day build expiry. [Pine64 update procedure](SOLOIST_DEVICE_SETUP.md#update-spotify-soloist)
+- [ ] After a Soloist update, confirm its user service is running, refresh the Host desk player list and verify audible Spotify playback. If local files are enabled, test the connection and play a local request.
+- [ ] After changing local music files, run **Scan library changes** and check the indexed results.
+
 ## If Soloist disappears
 
 From the host's Local music player section, use **Check player health** and note the service state, categorized hints and Spotify device availability. A running process alone is not proof of registration. Finish/reconcile any outstanding handoff before a deliberate **Restart Soloist**, then refresh devices and start again after it returns. Do not publish raw unit command lines or unredacted journal logs, since they may contain credentials. Root-cause diagnosis remains open until evidence is captured during the failure.

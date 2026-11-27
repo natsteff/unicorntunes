@@ -132,6 +132,13 @@ Do not use `down -v` unless you intentionally want to delete all data. Before up
 
 To roll back, stop the service and restore the previous image tag and its matching volume backup if a newer release changed the data schema. Version 0.1.0 adds settings storage without changing the earlier web database schema. There is no automatic updater or public internet exposure.
 
+### Playback-device updates
+
+- **Docker app:** An app release publishes a tagged image for the server to pull with `dcupd`. Check the app version under the logo after updating. The v0.8.2 browse and MPD handoff fixes are in this image.
+- **Restricted MPD agent:** Update on the Pine64 when release notes specify a minimum agent version for a feature. Run the versioned helper as the existing audio user and verify the reported agent version and the host connection. [Agent update procedure](LOCAL_FILES.md#update-the-playback-device)
+- **Spotify Soloist:** Track each board’s build timestamp and plan replacement before Spotify’s 90-day build expiry. Keep Soloist maintenance separate from pulling the Docker image. [Pine64 update procedure](SOLOIST_DEVICE_SETUP.md#update-spotify-soloist)
+- **Local library and system packages:** Scan library changes after music files change. Maintain Armbian, MPD and PulseAudio on the board separately and verify audio after a reboot.
+
 ## Publishing a version
 
 The repository's GitHub Actions workflow runs tests on main/PRs. A version tag publishes both its numbered image and `ghcr.io/natsteff/unicorntunes:latest` for amd64 and arm64 using the repository's scoped `GITHUB_TOKEN`. The first GHCR publication defaults private; verify package visibility/access after publication. Grant server users read access as needed. No personal GHCR write credential is stored in the repository. Tests, private records and runtime data are excluded from the image by an allowlist build context.

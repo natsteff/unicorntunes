@@ -96,8 +96,25 @@ def image_type(raw):
     return ''
 
 
+MAINTENANCE_ACTIONS = ('soloist_update_status', 'soloist_update_check', 'soloist_update_stage', 'soloist_update_apply')
+OUTPUT_ACTIONS = ('output_volume_status', 'output_volume_set')
+
+
 def execute(mpd,request):
     action=request.get('action')
+    if action in MAINTENANCE_ACTIONS:
+        from soloist_update import run
+        if action.endswith('_apply') and dict(mpd.command('status')).get('state') != 'stop':
+            raise ValueError('Local playback is active; Soloist maintenance was deferred.')
+        return run(action.removeprefix('soloist_update_'))
+    if action in OUTPUT_ACTIONS:
+        from player_health import output_volume
+        if action == 'output_volume_status':
+            return output_volume()
+        volume = request.get('volume')
+        if type(volume) is not int or not 0 <= volume <= 100:
+            raise ValueError('Output level must be a whole number from 0 to 100.')
+        return output_volume(volume, request.get('sink'))
     if action not in ('library','status','play','pause','resume','stop','scan','picture','volume','loudness_status','loudness_start','loudness_cancel','loudness_check','soloist_status','soloist_restart'):raise ValueError('Unknown action')
     if action in ('soloist_status','soloist_restart'):
         import player_health
@@ -122,7 +139,7 @@ def execute(mpd,request):
         import local_loudness as loudness
         matched=loudness.playback_record(uri,status.get('songid'))
         if matched and str(matched.get('volume'))!=str(status.get('volume')):matched=None
-        return {'agent_version':7,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
+        return {'agent_version':8,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
                 'progress_ms':round(float(status.get('elapsed',0))*1000),
                 'duration_ms':round(float(status.get('duration',0))*1000),'volume':status.get('volume'),
                 'error':status.get('error',''),'normalized':bool(matched),'legacy_copy':bool(normalized),'volume_plan':matched,'updating':bool(status.get('updating_db'))}
@@ -180,7 +197,11 @@ def main():
         if len(raw)>8192:raise ValueError('Request too large')
         request=json.loads(raw)
         if not isinstance(request,dict):raise ValueError('JSON object required')
-        with MPD() as mpd:result=execute(mpd,request)
+        if request.get('action') in OUTPUT_ACTIONS or request.get('action') in MAINTENANCE_ACTIONS[:-1]:
+            result = execute(None,request)
+        else:
+            with MPD() as mpd:
+                result = execute(mpd,request)
         print(json.dumps(result))
     except Exception as error:
         print(json.dumps({'error':str(error)[:300]}));return 1

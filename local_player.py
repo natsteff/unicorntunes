@@ -51,7 +51,7 @@ class RemoteMPD:
                  '-o','ControlMaster=auto','-o','ControlPersist=30','-o','ControlPath=/tmp/unicorntunes-mpd-%C',
                  '-i',str(key),'-p',str(port),user+'@'+host,'unicorntunes-mpd']
         try:
-            result=subprocess.run(command,input=json.dumps(dict(action=action,**args))+'\n',text=True,capture_output=True,timeout=45 if action in ('picture','soloist_restart','soloist_status') else 12)
+            result=subprocess.run(command,input=json.dumps(dict(action=action,**args))+'\n',text=True,capture_output=True,timeout=125 if action.startswith('soloist_update_') else 45 if action in ('picture','soloist_restart','soloist_status','output_volume_status','output_volume_set') else 12)
             if len(result.stdout)>24_000_000:raise f.Failure('Local library response is too large.')
             if not result.stdout.strip():raise f.Failure('Local-player SSH connection failed. Check its address, dedicated key and pinned host key.')
             payload=json.loads(result.stdout)
@@ -81,6 +81,8 @@ class LocalPlayback:
         self.local_active=self.meta('local_active')
         self.local_error=''
         self.player_missing=False
+        self.soloist_maintenance_job = None
+        self.soloist_status_due = 0
 
     def local_bound(self):
         return bool(self.local_config.get('enabled') and self.device and self.local_config.get('device')==self.device)
@@ -201,7 +203,130 @@ class LocalPlayback:
             response['applied_volume']=result['applied_volume']
         return response
 
+    def soloist_update(self, action):
+        if not self.local_bound():
+            raise f.Failure('Select the linked Pine64 and save its player connection first.')
+        if self.soloist_maintenance_job and self.soloist_maintenance_job.get('pending'):
+            raise f.Failure('Soloist is checking or staging an update.')
+        if action == 'apply':
+            if self.enabled or self.local_active or self.db.execute(
+                "SELECT 1 FROM songs WHERE state IN ('sending','accepted','queued','uncertain','playing')"
+            ).fetchone():
+                raise f.Failure('Stop the session and resolve active playback before updating Soloist.')
+            if self.api.call('/me/player').get('is_playing'):
+                raise f.Failure('Spotify is playing. Soloist maintenance was deferred.')
+        try:
+            result = self.local.call('soloist_update_'+action)
+        except f.Failure as error:
+            if 'Unknown action' in str(error):
+                raise f.Failure('Install the updated agent on the linked Pine64 first.') from error
+            raise
+        if action == 'apply':
+            try:
+                devices = self.api.call('/me/player/devices').get('devices', [])
+                discovered = any(item.get('id') == self.device and not item.get('is_restricted') for item in devices)
+            except f.Failure:
+                discovered = False
+            result['discovery_confirmed'] = discovered
+            self.set_meta('soloist_update_result', result)
+        elif action == 'status':
+            previous = self.meta('soloist_update_result', {})
+            if previous.get('installed') == result.get('installed'):
+                result['discovery_confirmed'] = previous.get('discovery_confirmed')
+        self.set_meta('soloist_update_status', {'device':self.device, **result})
+        return result
+
+    def queue_soloist_update(self, action):
+        if not self.local_bound():
+            raise f.Failure('Select the linked Pine64 and save its player connection first.')
+        if self.soloist_maintenance_job and self.soloist_maintenance_job.get('pending'):
+            raise f.Failure('Soloist is already checking or staging an update.')
+        connection = self.local
+        job = {'device': self.device, 'pending': True}
+        self.soloist_maintenance_job = job
+
+        def run():
+            try:
+                result = connection.call('soloist_update_'+action)
+            except f.Failure as error:
+                result = {'error': 'Install the updated agent on the linked Pine64 first.'
+                          if 'Unknown action' in str(error) else str(error)}
+            except Exception:
+                result = {'error':'The Soloist maintenance check failed.'}
+            job.update(result, pending=False)
+
+        threading.Thread(target=run, daemon=True).start()
+        return {'pending':True}
+
+    def scheduled_soloist_update(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        settings = self.meta('soloist_update_schedule', {})
+        if not self.local_bound():
+            return
+        if settings.get('enabled') and time.monotonic() >= self.soloist_status_due:
+            self.soloist_status_due = time.monotonic() + 3600
+            try:
+                self.soloist_update('status')
+            except f.Failure:
+                pass
+        if not settings.get('enabled') or self.enabled or self.local_active:
+            return
+        now = datetime.now(ZoneInfo(self.room['timezone']))
+        if now.hour != settings['hour']:
+            return
+        key = now.strftime('%Y-%m-%d')
+        if self.meta('soloist_update_attempt') == key:
+            return
+        self.set_meta('soloist_update_attempt', key)
+        try:
+            if self.soloist_update('status').get('staged'):
+                devices = self.api.call('/me/player/devices').get('devices', [])
+                if not any(item.get('id') == self.device and not item.get('is_restricted') for item in devices):
+                    raise f.Failure('Scheduled update deferred because the linked Spotify player is not available.')
+                self.soloist_update('apply')
+            self.set_meta('soloist_update_schedule_message', '')
+        except f.Failure as error:
+            self.set_meta('soloist_update_schedule_message', str(error))
+
     def local_action(self,sid,route,body):
+        if route == '/api/host/soloist-update':
+            action = body.get('action', 'status')
+            if action == 'schedule':
+                hour, enabled = body.get('hour'), body.get('enabled')
+                if type(hour) is not int or not 0 <= hour <= 23 or type(enabled) is not bool:
+                    raise f.Failure('Choose a maintenance hour from 0 to 23.')
+                self.set_meta('soloist_update_schedule', {'hour':hour, 'enabled':enabled})
+                return {'ok':True}
+            if action in ('check', 'stage'):
+                return self.queue_soloist_update(action)
+            if action == 'job':
+                job = self.soloist_maintenance_job
+                if not job or not self.local_bound() or job['device'] != self.device:
+                    raise f.Failure('No update check is running for the linked player.')
+                return {key:value for key,value in job.items() if key != 'device'}
+            if action not in ('status', 'apply'):
+                raise f.Failure('Unknown Soloist maintenance action.')
+            result = self.soloist_update(action)
+            result['schedule_message'] = self.meta('soloist_update_schedule_message', '')
+            return result
+        if route in ('/api/host/output-volume', '/api/host/output-volume-status'):
+            device = body.get('device')
+            if not device or not self.local_config.get('enabled') or device != self.local_config.get('device'):
+                raise f.Failure('Link this player in Player settings before controlling its output.')
+            if route.endswith('-status'):
+                action, options = 'output_volume_status', {}
+            else:
+                volume = body.get('volume')
+                if type(volume) is not int or not 0 <= volume <= 100:
+                    raise f.Failure('Output level must be a whole number from 0 to 100.')
+                action, options = 'output_volume_set', {'volume':volume, 'sink':body.get('sink')}
+            try:
+                return self.local.call(action, **options)
+            except f.Failure as error:
+                if 'Unknown action' in str(error):
+                    raise f.Failure('Update the restricted playback-device agent to enable output volume.') from error
+                raise
         if route=='/api/host/player-diagnostics':
             if not self.local_config.get('enabled'):raise f.Failure('Configure the playback-device connection first.')
             result=self.local.call('soloist_status')

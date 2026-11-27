@@ -156,6 +156,24 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(self.app.room['copy'], COPY)
         self.assertEqual(self.app.room['theme'], 'Metal night')
 
+    def test_player_wording_preserves_blank_and_restores_inheritance(self):
+        host, session = self.app.session('')
+        session['host'] = True
+        guest, _ = self.app.session('')
+        self.app.device = 'speaker'
+        self.app.set_meta('player_names', {'speaker':'UnicornPlayer - Garage'})
+        self.assertEqual(self.app.room_state(guest)['welcome_line'], 'Welcome to UnicornPlayer - Garage')
+        self.app.action(host, '/api/host/player-welcome', {'device':'speaker','welcome':'  '})
+        self.assertEqual(self.app.room_state(guest)['welcome_line'], '')
+        self.app.action(host, '/api/host/player-welcome', {'device':'speaker','restore':True})
+        self.assertEqual(self.app.room_state(guest)['welcome_line'], 'Welcome to UnicornPlayer - Garage')
+        self.app.action(host, '/api/host/player-headline', {'device':'speaker','headline':'Welcome to the Unicorn Garage','accent':'Unicorn Garage'})
+        self.assertEqual(self.app.room_state(guest)['headline_accent'], 'Unicorn Garage')
+        self.app.action(host, '/api/host/player-headline', {'device':'speaker','headline':''})
+        self.assertEqual(self.app.room_state(guest)['welcome_headline'], '')
+        self.app.action(host, '/api/host/player-headline', {'device':'speaker','restore':True})
+        self.assertIsNone(self.app.room_state(guest)['welcome_headline'])
+
     def test_new_gathering_resets_guarantee_retains_history_and_holds_uncertain(self):
         self.app.submit(self.sids[1], A)
         self.app.action(self.host, '/api/host/gathering', {})

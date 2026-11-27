@@ -72,6 +72,58 @@ class LocalPlayerTests(unittest.TestCase):
         with self.assertRaises(ValueError):mpd_agent.execute(mpd,{'action':'shell'})
         mpd.command.assert_not_called()
 
+    def test_output_volume_targets_linked_device_and_verified_sink(self):
+        self.app.local_config.update(enabled=True, device='speaker')
+        self.app.local = Mock()
+        with self.assertRaises(f.Failure):
+            self.app.action(self.sid, '/api/host/output-volume', {'device':'other','sink':'analog','volume':40})
+        self.app.local.call.assert_not_called()
+        self.app.action(self.sid, '/api/host/output-volume', {'device':'speaker','sink':'analog','volume':40})
+        self.app.local.call.assert_called_once_with('output_volume_set', sink='analog', volume=40)
+
+        def command(args):
+            output = {'get-default-sink':'analog', 'get-sink-volume':'front-left: 25000 / 40% / -2 dB',
+                      'get-sink-mute':'Mute: yes', 'set-sink-volume':''}
+            return Mock(returncode=0, stdout=output[args[1]])
+
+        with patch('player_health.command', side_effect=command) as pulse:
+            with self.assertRaisesRegex(ValueError, 'default output changed'):
+                mpd_agent.execute(None, {'action':'output_volume_set','sink':'old','volume':40})
+            pulse.assert_called_once_with(['pactl','get-default-sink'])
+            result = mpd_agent.execute(None, {'action':'output_volume_set','sink':'analog','volume':40})
+            self.assertEqual(result, {'sink':'analog','volume':40,'muted':True})
+            self.assertEqual([args[0] for args, _ in pulse.call_args_list if args[0][1].startswith('set')],
+                             [['pactl','set-sink-volume','analog','40%']])
+
+    def test_spotify_volume_requires_host_and_explicit_supported_device(self):
+        guest, _ = self.app.session('')
+        route = '/api/host/spotify-volume'
+        body = {'device':'speaker','volume':0}
+        with self.assertRaises(PermissionError):
+            self.app.action(guest, route, body)
+        self.app.api.api.call.return_value = {'devices':[{'id':'speaker','supports_volume':False}]}
+        with self.assertRaises(f.Failure):
+            self.app.action(self.sid, route, body)
+        self.app.api.api.call.return_value = {'devices':[{'id':'speaker','supports_volume':True}]}
+        self.app.action(self.sid, route, body)
+        self.app.api.api.call.assert_called_with('/me/player/volume', 'PUT', None, {'device_id':'speaker','volume_percent':0})
+
+    def test_soloist_update_rejects_active_playback_before_remote_apply(self):
+        self.app.local_config.update(enabled=True, device='speaker')
+        self.app.device = 'speaker'
+        self.app.local = Mock()
+        self.app.api.api.call.return_value = {'is_playing':True}
+        route = '/api/host/soloist-update'
+        with self.assertRaisesRegex(f.Failure, 'Spotify is playing'):
+            self.app.action(self.sid, route, {'action':'apply'})
+        self.app.local.call.assert_not_called()
+        mpd = Mock()
+        mpd.command.return_value = [('state','play')]
+        with patch('soloist_update.run') as update:
+            with self.assertRaisesRegex(ValueError, 'Local playback is active'):
+                mpd_agent.execute(mpd, {'action':'soloist_update_apply'})
+            update.assert_not_called()
+
     def test_protocol_quotes_filename_and_rejects_newlines(self):
         mpd=mpd_agent.MPD();mpd.file=io.BytesIO()
         # Validate before any command reaches the socket.

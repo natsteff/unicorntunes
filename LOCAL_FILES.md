@@ -150,3 +150,8 @@ The reason for the intermittent device disappearance remains unconfirmed until d
 ## Resume paused local playback (v0.8.0)
 
 The host's Pause button becomes Resume when playback is confirmed paused. Resuming audio does not enable automatic request handoff. Local MPD resume requires agent 7, which uses MPD's pause-off command without replacing the queue or restarting the file; existing agent 6 remains compatible with ordinary playback and analysis. Follow the [v0.8.0 README upgrade instructions](README.md#upgrade-notes-for-v080) for the versioned helper. Spotify-only use needs no playback-device agent update.
+
+
+### Player output volume
+
+In **Host desk → Player settings → Volume controls**, choose **Refresh volume levels** to read the selected player’s PulseAudio output. Output volume requires the updated Docker application and restricted agent 8 with `pactl` available for the audio user. It targets the reported default output, affects streams routed there, and leaves the output mute state alone. Spotify and local-file levels have their own controls in the same section. Use the stereo’s knob or remote for its hardware level.

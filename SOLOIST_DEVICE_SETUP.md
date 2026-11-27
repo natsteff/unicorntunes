@@ -39,6 +39,23 @@ Configure a recognizable Spotify Connect device name and retain the paired state
 
 Spotify's startup interface can put the API key in service/process arguments. Do not share unredacted unit contents, ExecStart output, process command lines or logs. Keep credentials out of Git. Builds require periodic vendor updates; record and check the installed version when rebuilding.
 
+## Update Spotify Soloist
+
+Spotify says Soloist builds expire after 90 days. Check the installed executable with `./soloist --version` from its directory and record the version and build timestamp for each board. Plan the next update from the build timestamp so a newly downloaded older build does not reset the maintenance clock. [Spotify Soloist overview](https://developer.spotify.com/documentation/soloist)
+
+1. Download a newer Linux ARM64 archive for Garage from Spotify. Extract it separately and compare the new executable’s version and build timestamp with the installed one. [Official downloads](https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates)
+2. Schedule a brief playback interruption. Keep a private backup of the current executable, service configuration and stored pairing state. Preserve the audio user, the existing service options and the advertised name **UnicornPlayer - Garage**.
+3. Replace the executable at the existing service path and restart `soloist.service` in the audio user’s systemd session. Check `systemctl --user is-active soloist.service` and record the new build information.
+4. Refresh players in the Host desk and verify that **UnicornPlayer - Garage** appears and plays audibly. If the update fails, restore the previous executable if its build is still valid. Otherwise use a newer supported build and check the existing service and pairing state.
+
+## Scheduled Soloist maintenance
+
+Install restricted agent 8 on the linked Pine64 as the audio user. From the published v0.8.3 checkout, run `bash deploy/update-local-agent.sh` and `bash deploy/enable-soloist-maintenance.sh`. The user timer checks weekly and stages a newer official ARM64 build within 30 days of expiry. Ensure the audio user’s services run independently of SSH login. To check staging immediately, run `systemctl --user start unicorntunes-soloist-stage.service`.
+
+In **Host desk → Setup & troubleshooting → Soloist updates**, select **Read update status** to see the build date, expiry and staged build. Enable scheduled application and choose the maintenance hour in the configured UnicornTunes timezone. The Docker worker checks within that hour while it is running. It applies only when handoff is stopped, requests are resolved, Spotify is idle and MPD reports stopped. A busy or unverifiable player defers the update. The host can also check, stage or apply manually.
+
+The updater preserves the service and paired data, backs up the executable and verifies the restarted user service. The Host desk reports whether Spotify discovery was observed. Confirm audible playback after applying a build.
+
 ## Validate Spotify playback
 
 1. Start the Soloist user service.

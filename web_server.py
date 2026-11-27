@@ -391,7 +391,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         self.reason = 'Starting selected player.'
         try:
             if startup_context:
-                self.api.call('/me/player/play', 'PUT', {'context_uri': startup_context}, {'device_id': device})
+                startup_context = self.play_background({'uri': startup_context}, device)
             else:
                 self.api.call('/me/player', 'PUT', {'device_ids': [device], 'play': not start_waiting_spotify})
             observed = {}
@@ -569,6 +569,16 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             return {'ok': True}
         if route.startswith('/api/host/') and not session['host']:
             raise PermissionError('Host access required.')
+        if route == '/api/host/spotify-volume':
+            device, volume = body.get('device'), body.get('volume')
+            if not device or type(volume) is not int or not 0 <= volume <= 100:
+                raise f.Failure('Select a player and enter a whole-number volume from 0 to 100.')
+            devices = self.api.call('/me/player/devices').get('devices', [])
+            selected = next((item for item in devices if item.get('id') == device), None)
+            if not selected or selected.get('is_restricted') or selected.get('supports_volume') is not True:
+                raise f.Failure('Spotify volume control is unavailable for this player.')
+            self.api.call('/me/player/volume', 'PUT', params={'device_id':device, 'volume_percent':volume})
+            return {'accepted':True}
         if route == '/api/host/diagnostics':
             return self.diagnostic_report()
         if route == '/api/host/account':
@@ -647,15 +657,18 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             device = str(body.get('device', ''))
             uri = context_uri(body.get('uri'))
             scope = body.get('scope', 'player')
+            name = str(body.get('name') or '').strip()[:200]
             if scope == 'gathering':
-                self.set_meta('background_override', {'uri': uri, 'gathering': self.meta('gathering')} if uri else {})
+                self.set_meta('background_override', {'uri': uri, 'name': name, 'gathering': self.meta('gathering')} if uri else {})
+            elif scope == 'house':
+                self.set_meta('house_background', {'uri': uri, 'name': name} if uri else {})
             elif scope == 'player':
                 if not device or (device != self.device and not any(
                     row.get('id') == device and not row.get('is_restricted')
                     for row in self.api.call('/me/player/devices').get('devices', [])
                 )):
                     raise f.Failure('Choose an available player before saving its background music.')
-                self.save_background_default(device, uri, True)
+                self.save_background_default(device, uri, True, name)
             else:
                 raise ValueError('Invalid background scope.')
             self.background_message = ''
@@ -666,8 +679,8 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         return {'ok': True}
 
 
-STATIC_FILES = {'/legacy': 'legacy.html', '/legacy/': 'legacy.html', '/legacy.js': 'legacy.js', '/legacy.css': 'legacy.css', '/site.webmanifest': 'site.webmanifest', '/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js', '/kiosk.js': 'kiosk.js', '/host.js': 'host.js', '/host.css': 'host.css'}
-STATIC_TYPES = {'legacy.html': 'text/html; charset=utf-8', 'legacy.js': 'text/javascript', 'legacy.css': 'text/css', 'site.webmanifest': 'application/manifest+json', 'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript', 'kiosk.js': 'text/javascript', 'host.js': 'text/javascript', 'host.css': 'text/css'}
+STATIC_FILES = {'/host.webmanifest': 'host.webmanifest', '/legacy': 'legacy.html', '/legacy/': 'legacy.html', '/legacy.js': 'legacy.js', '/legacy.css': 'legacy.css', '/site.webmanifest': 'site.webmanifest', '/favicon.png': 'favicon.png', '/playlists.js': 'playlists.js', '/room.js': 'room.js', '/room.css': 'room.css', '/display': 'index.html', '/': 'index.html', '/host': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/foxtunes-logo.png': 'foxtunes-logo.png', '/vendor/qrcode.min.js': 'vendor/qrcode.min.js', '/kiosk.js': 'kiosk.js', '/host.js': 'host.js', '/host.css': 'host.css'}
+STATIC_TYPES = {'host.webmanifest': 'application/manifest+json', 'legacy.html': 'text/html; charset=utf-8', 'legacy.js': 'text/javascript', 'legacy.css': 'text/css', 'site.webmanifest': 'application/manifest+json', 'favicon.png': 'image/png', 'playlists.js': 'text/javascript', 'room.js': 'text/javascript', 'room.css': 'text/css', 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript', 'style.css': 'text/css', 'foxtunes-logo.png': 'image/png', 'vendor/qrcode.min.js': 'text/javascript', 'kiosk.js': 'text/javascript', 'host.js': 'text/javascript', 'host.css': 'text/css'}
 
 
 def handler(app):
@@ -714,7 +727,12 @@ def handler(app):
                             return
                         if parsed.path in STATIC_FILES:
                             name = STATIC_FILES[parsed.path]
-                            self.respond(200, (Path(__file__).parent / 'web' / name).read_bytes(), STATIC_TYPES[name])
+                            raw = (Path(__file__).parent / 'web' / name).read_bytes()
+                            if parsed.path == '/host':
+                                raw = raw.replace(b'content="UnicornTunes"', b'content="Host Desk"', 2)
+                                raw = raw.replace(b'<title>UnicornTunes</title>', b'<title>Host Desk</title>', 1)
+                                raw = raw.replace(b'href="/site.webmanifest"', b'href="/host.webmanifest"', 1)
+                            self.respond(200, raw, STATIC_TYPES[name])
                             return
                         if parsed.path == '/api/share':
                             self.respond(200, {'url': (app.public_url or 'http://' + host) + '/'})
@@ -787,7 +805,13 @@ def handler(app):
                         elif parsed.path == '/api/host/devices':
                             if not session['host']:
                                 raise PermissionError('Host access required.')
-                            payload = {'devices': app.api.call('/me/player/devices').get('devices', [])}
+                            devices = app.api.call('/me/player/devices').get('devices', [])
+                            names = app.meta('player_names', {})
+                            updated_names = dict(names, **{item['id']: item['name'] for item in devices
+                                              if item.get('id') and item.get('name') and not item.get('is_restricted')})
+                            if updated_names != names:
+                                app.set_meta('player_names', updated_names)
+                            payload = {'devices': devices}
                         else:
                             raise LookupError('Not found.')
                     self.respond(200, payload, cookie=sid)
@@ -837,9 +861,14 @@ def main():
     stop = threading.Event()
 
     def worker():
+        maintenance_check = 0
         while not stop.wait(1):
             with app.lock:
                 app.poll()
+                now = time.monotonic()
+                if now >= maintenance_check:
+                    maintenance_check = now + 300
+                    app.scheduled_soloist_update()
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     print('UnicornTunes: http://127.0.0.1:%s' % args.port, flush=True)
