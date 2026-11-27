@@ -173,6 +173,11 @@ class WebTests(unittest.TestCase):
             self.assertNotIn('access_token', encoded)
             request(clients[0], '/api/host/login', {'password': self.app.password}, states[0]['csrf'])
             self.assertTrue(request(clients[0], '/api/state')['host'])
+            self.app.reason = self.app.error = 'Private startup diagnostic.'
+            host_state = request(clients[0], '/api/state')
+            guest_state = request(clients[1], '/api/state')
+            self.assertEqual(host_state['handoff']['reason'], 'Private startup diagnostic.')
+            self.assertNotIn('Private startup diagnostic.', json.dumps(guest_state))
             self.assertEqual(
                 request(clients[0], '/api/host/devices')['devices'],
                 [{'id': 'speaker', 'name': 'UnicornPlayer - Garage', 'is_active': True}],

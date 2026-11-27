@@ -83,6 +83,8 @@ class LocalPlayback:
         self.player_missing=False
         self.soloist_maintenance_job = None
         self.soloist_status_due = 0
+        self.boot_probe = None
+        self.boot_probe_due = 0
 
     def local_bound(self):
         return bool(self.local_config.get('enabled') and self.device and self.local_config.get('device')==self.device)
@@ -202,6 +204,93 @@ class LocalPlayback:
         if self.local_active and self.local_config.get('normalization_enabled') and 'applied_volume' in result:
             response['applied_volume']=result['applied_volume']
         return response
+
+    def mark_manual_playback_stop(self):
+        self.startup_pending = None
+        self.set_meta('manual_playback_stop', time.time())
+
+    def update_boot_status(self, device, boot_id, message, consumed=False):
+        statuses = self.meta('boot_start_status', {})
+        update = {'boot_id':boot_id, 'message':message, 'consumed':consumed}
+        if statuses.get(device) != update:
+            statuses[device] = update
+            self.set_meta('boot_start_status', statuses)
+
+    def handle_player_boot(self, device, snapshot):
+        boot_id, uptime = snapshot.get('boot_id'), snapshot.get('uptime')
+        if not isinstance(boot_id, str) or not re.fullmatch(r'[a-f0-9-]{36}', boot_id) or type(uptime) not in (int,float) or not 0 <= uptime <= 600:
+            return
+        previous = self.meta('boot_start_status', {}).get(device, {})
+        if previous.get('boot_id') == boot_id and previous.get('consumed'):
+            return
+        def report(message, consumed=False):
+            self.update_boot_status(device, boot_id, message, consumed)
+
+        if self.meta('player_auto_start', {}).get(device, True) is not True:
+            report('Power-on start is off for this player.', True)
+            return
+        if self.meta('manual_playback_stop', 0) >= time.time() - uptime - 2:
+            report('Power-on start skipped because the host stopped or paused playback.', True)
+            return
+        if self.enabled or self.startup_pending or self.local_active:
+            owner = self.startup_pending['device'] if self.startup_pending else self.device
+            report('Session already active for this player.' if owner == device
+                   else 'Another player owns the session. Use the Host Desk to move it.', True)
+            return
+        if self.db.execute("SELECT 1 FROM songs WHERE state IN ('sending','accepted','queued','uncertain')").fetchone():
+            report('Power-on start is held until outstanding playback is reconciled.', True)
+            return
+        try:
+            devices = self.api.call('/me/player/devices').get('devices', [])
+            if not any(item.get('id') == device and not item.get('is_restricted') for item in devices):
+                report('Pine64 booted. Waiting for its Soloist player to appear.')
+                return
+            current = self.api.call('/me/player')
+            actual = (current.get('device') or {}).get('id')
+            if current.get('is_playing') and actual != device:
+                report('Spotify is playing on another device. Use the Host Desk to move it.', True)
+                return
+        except f.Failure:
+            report('Pine64 booted. Waiting to verify Spotify playback.')
+            return
+        # Persist the decision before making a playback mutation. Never replay it after a lost response.
+        report('Starting this player after power-on.', True)
+        try:
+            self.start_session(device, self.accepting)
+        except (f.Failure, OSError) as error:
+            report('Power-on start needs attention: ' + str(error), True)
+        else:
+            report('Power-on startup sent. See Playback for current session status.' if self.startup_pending
+                   else 'Session started after power-on.', True)
+
+    def check_linked_player_boot(self):
+        probe = self.boot_probe
+        if probe and 'result' in probe:
+            self.boot_probe = None
+            if probe['connection'] is self.local and probe['device'] == self.local_config.get('device'):
+                if probe['result'].get('upgrade_required'):
+                    self.update_boot_status(probe['device'], '', 'Install agent 9 to enable power-on start.')
+                else:
+                    self.handle_player_boot(probe['device'], probe['result'])
+            probe = None
+        due = time.monotonic()
+        device = self.local_config.get('device')
+        if probe or due < self.boot_probe_due or not device or not self.local_config.get('enabled'):
+            return
+        self.boot_probe_due = due + 15
+        connection = self.local
+        probe = {'device':device, 'connection':connection}
+        self.boot_probe = probe
+
+        def read_boot():
+            try:
+                probe['result'] = connection.call('boot_status')
+            except f.Failure as error:
+                probe['result'] = {'upgrade_required':'Unknown action' in str(error)}
+            except Exception:
+                probe['result'] = {}
+
+        threading.Thread(target=read_boot, daemon=True).start()
 
     def soloist_update(self, action):
         if not self.local_bound():

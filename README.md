@@ -278,3 +278,9 @@ In-memory reports reset when the container restarts; Docker logs follow the exis
 Run `dcupd` for the Host Desk Home Screen shortcut, background playlist picker, guest wording controls and audio settings. The host can choose a player or gathering playlist by name through **Browse Spotify playlists**. In Music library, **Use for background…** saves to the chosen scope. When no background is configured for the selected player and gathering, Playback shows a warning and a shortcut to the picker.
 
 PulseAudio output volume and managed Soloist updates require restricted agent 8 on the linked Pine64. [Set up scheduled Soloist maintenance](SOLOIST_DEVICE_SETUP.md#scheduled-soloist-maintenance)
+
+## Upgrade notes for v0.8.4
+
+Run `dcupd` for the improved background startup check, single per-player guest welcome and Room stats defaults. Background startup can show **Starting** while waiting for Spotify. The first request takes priority once startup is confirmed. Detailed confirmation errors remain in the signed-in Host Desk.
+
+For amp-triggered startup, update the linked Pine64 to agent 9 using the versioned [agent helper](https://github.com/natsteff/unicorntunes/blob/v0.8.4/deploy/update-local-agent.sh). **Player settings → Start session on power-on** defaults to On. After a fresh boot the Docker server reads the Linux boot identity through the existing restricted SSH link, waits for the matching Soloist player and starts at most once for that boot. It leaves an existing session on another player in control and respects a host Pause or Stop after that boot. Install the agent and then power-cycle the player at the next normal use to test.

@@ -162,16 +162,16 @@ class RoomTests(unittest.TestCase):
         guest, _ = self.app.session('')
         self.app.device = 'speaker'
         self.app.set_meta('player_names', {'speaker':'UnicornPlayer - Garage'})
-        self.assertEqual(self.app.room_state(guest)['welcome_line'], 'Welcome to UnicornPlayer - Garage')
+        self.app.set_meta('player_headlines', {'speaker':'This is a test'})
+        self.assertEqual(self.app.room_state(guest)['welcome_headline'], 'Welcome to UnicornPlayer - Garage')
         self.app.action(host, '/api/host/player-welcome', {'device':'speaker','welcome':'  '})
-        self.assertEqual(self.app.room_state(guest)['welcome_line'], '')
-        self.app.action(host, '/api/host/player-welcome', {'device':'speaker','restore':True})
-        self.assertEqual(self.app.room_state(guest)['welcome_line'], 'Welcome to UnicornPlayer - Garage')
-        self.app.action(host, '/api/host/player-headline', {'device':'speaker','headline':'Welcome to the Unicorn Garage','accent':'Unicorn Garage'})
-        self.assertEqual(self.app.room_state(guest)['headline_accent'], 'Unicorn Garage')
-        self.app.action(host, '/api/host/player-headline', {'device':'speaker','headline':''})
         self.assertEqual(self.app.room_state(guest)['welcome_headline'], '')
-        self.app.action(host, '/api/host/player-headline', {'device':'speaker','restore':True})
+        self.app.action(host, '/api/host/player-welcome', {'device':'speaker','restore':True})
+        self.assertEqual(self.app.room_state(guest)['welcome_headline'], 'Welcome to UnicornPlayer - Garage')
+        self.app.action(host, '/api/host/player-welcome', {'device':'speaker','welcome':'Welcome to the Unicorn Garage','accent':'Unicorn Garage'})
+        self.assertEqual(self.app.room_state(guest)['headline_accent'], 'Unicorn Garage')
+        self.assertEqual(self.app.meta('player_headlines')['speaker'], 'This is a test')
+        self.app.device = ''
         self.assertIsNone(self.app.room_state(guest)['welcome_headline'])
 
     def test_new_gathering_resets_guarantee_retains_history_and_holds_uncertain(self):

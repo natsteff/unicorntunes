@@ -6,7 +6,7 @@ import json
 import re
 import socket
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 
 class MPD:
@@ -102,6 +102,10 @@ OUTPUT_ACTIONS = ('output_volume_status', 'output_volume_set')
 
 def execute(mpd,request):
     action=request.get('action')
+    if action == 'boot_status':
+        boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        uptime = float(Path('/proc/uptime').read_text().split()[0])
+        return {'boot_id':boot_id, 'uptime':uptime}
     if action in MAINTENANCE_ACTIONS:
         from soloist_update import run
         if action.endswith('_apply') and dict(mpd.command('status')).get('state') != 'stop':
@@ -139,7 +143,7 @@ def execute(mpd,request):
         import local_loudness as loudness
         matched=loudness.playback_record(uri,status.get('songid'))
         if matched and str(matched.get('volume'))!=str(status.get('volume')):matched=None
-        return {'agent_version':8,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
+        return {'agent_version':9,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
                 'progress_ms':round(float(status.get('elapsed',0))*1000),
                 'duration_ms':round(float(status.get('duration',0))*1000),'volume':status.get('volume'),
                 'error':status.get('error',''),'normalized':bool(matched),'legacy_copy':bool(normalized),'volume_plan':matched,'updating':bool(status.get('updating_db'))}
@@ -197,7 +201,7 @@ def main():
         if len(raw)>8192:raise ValueError('Request too large')
         request=json.loads(raw)
         if not isinstance(request,dict):raise ValueError('JSON object required')
-        if request.get('action') in OUTPUT_ACTIONS or request.get('action') in MAINTENANCE_ACTIONS[:-1]:
+        if request.get('action') == 'boot_status' or request.get('action') in OUTPUT_ACTIONS or request.get('action') in MAINTENANCE_ACTIONS[:-1]:
             result = execute(None,request)
         else:
             with MPD() as mpd:

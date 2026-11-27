@@ -124,6 +124,25 @@ class LocalPlayerTests(unittest.TestCase):
                 mpd_agent.execute(mpd, {'action':'soloist_update_apply'})
             update.assert_not_called()
 
+    def test_power_on_starts_only_linked_player_once_and_respects_off(self):
+        self.app.local_config.update(enabled=True, device='speaker')
+        self.app.api.api.call.side_effect = lambda path, *_: (
+            {'devices':[{'id':'speaker'}]} if path.endswith('/devices') else {'is_playing':False}
+        )
+        first = {'boot_id':'a'*36,'uptime':30}
+        with patch.object(self.app, 'start_session') as start:
+            self.app.handle_player_boot('speaker', first)
+            self.app.handle_player_boot('speaker', first)
+            start.assert_called_once_with('speaker', True)
+            self.app.set_meta('player_auto_start', {'speaker':False})
+            self.app.handle_player_boot('speaker', {'boot_id':'b'*36,'uptime':60})
+            self.assertEqual(start.call_count, 1)
+            self.app.set_meta('player_auto_start', {'speaker':True})
+            self.app.enabled, self.app.device = True, 'other'
+            self.app.handle_player_boot('speaker', {'boot_id':'c'*36,'uptime':60})
+            self.assertEqual(start.call_count, 1)
+            self.assertIn('Another player', self.app.meta('boot_start_status')['speaker']['message'])
+
     def test_protocol_quotes_filename_and_rejects_newlines(self):
         mpd=mpd_agent.MPD();mpd.file=io.BytesIO()
         # Validate before any command reaches the socket.

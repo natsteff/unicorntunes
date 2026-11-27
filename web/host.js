@@ -67,18 +67,20 @@
         <div class="host-panel-heading"><h3>Player settings</h3><p>Choose the player you want to configure in Playback.</p></div>
         <div class="host-card"><h4>Default background music</h4><p id="host-default-player"></p>
         <p id="host-default-name"></p><button type="button" class="secondary" data-background-pick="player">Browse Spotify playlists</button><form class="host-settings-form" id="host-background-form"><label for="host-background-uri">Spotify playlist, album or artist link or URI</label><input id="host-background-uri" type="text" maxlength="200"><button type="submit" class="secondary">Save player default</button></form><p id="host-default-status" role="status"></p></div>
-        <div class="host-card"><h4>Guest welcome line</h4><form id="host-player-welcome-form" class="host-settings-form">
-          <label for="host-player-welcome">Welcome line for this player</label><input type="text" id="host-player-welcome" maxlength="300">
-          <p class="muted">Leave blank to hide the welcome line on the guest page.</p><p id="host-player-welcome-current" class="muted"></p>
-          <div class="buttons"><button type="submit" class="secondary">Save welcome line</button><button type="button" class="secondary" id="host-player-welcome-restore">Restore default</button></div>
-        </form><p id="host-player-welcome-status" role="status"></p></div>
-        <div class="host-card"><h4>Guest headline</h4><form id="host-player-headline-form" class="host-settings-form">
-          <label for="host-player-headline">Heading for this player</label><input type="text" id="host-player-headline" maxlength="300">
-          <p class="muted">Leave blank to hide the headline on the guest page.</p><p id="host-player-headline-current" class="muted"></p>
+        <div class="host-card"><h4>Guest welcome</h4><form id="host-player-welcome-form" class="host-settings-form">
+          <label for="host-player-welcome">Welcome for this player</label><input type="text" id="host-player-welcome" maxlength="300">
+          <p class="muted">Leave blank to hide the guest heading.</p><p id="host-player-welcome-current" class="muted"></p>
           <label for="host-player-accent">Text to highlight in red</label><input type="text" id="host-player-accent" maxlength="300">
-          <p id="host-player-headline-preview" class="headline-preview" aria-label="Headline preview"></p>
-          <div class="buttons"><button type="submit" class="secondary">Save headline</button><button type="button" class="secondary" id="host-player-headline-restore">Restore default</button></div>
-        </form><p id="host-player-headline-status" role="status"></p></div>
+          <p id="host-player-welcome-preview" class="headline-preview" aria-label="Welcome preview"></p>
+          <div class="buttons"><button type="submit" class="secondary">Save welcome</button><button type="button" class="secondary" id="host-player-welcome-restore">Restore default</button></div>
+        </form><p id="host-player-welcome-status" role="status"></p></div>
+        <div class="host-card"><h4>Power-on behavior</h4>
+          <form id="host-player-power-form" class="host-settings-form">
+            <label><input type="checkbox" id="host-player-power"> Start session on power-on</label>
+            <p class="muted">When its amp boots the linked Pine64, the player can start its own session once Soloist is available.</p>
+            <button type="submit" class="secondary">Save power-on setting</button>
+          </form><p id="host-player-power-status" role="status"></p>
+        </div>
         <section id="host-audio-levels" class="host-card" tabindex="-1" aria-labelledby="host-volume-title">
           <h4 id="host-volume-title">Volume controls</h4>
           <p id="host-volume-device"></p>
@@ -207,7 +209,8 @@
         const next=current.error||health.reason||(health.stale?'Playback status is stale. Open Setup & troubleshooting to check player health.':!current.spotify_connected?'Connect Spotify in Setup & troubleshooting.':running?(health.idle?'Ready for the next request.':'Use Pause, Next track or Stop handoff below. No restart needed for each song.'):'Choose a player, then Start session. Any music already playing may continue.');
         $('host-next-step').textContent=next;
         const moving=!!current.device&&!!$('devices').value&&$('devices').value!==current.device;
-        $('stop').disabled=!running;
+        const starting=health.status==='Starting';
+        $('stop').disabled=!running&&!starting;
         $('pause').textContent=current.now&&!current.now.playing?'Resume playback':'Pause playback';
         $('pause').disabled=!current.now||health.stale;
         $('host-pause-help').textContent=current.now&&!current.now.playing?'Resume audio only. Start session separately to enable requests.':'Pause audio and stop automatic request handoff.';
@@ -236,7 +239,8 @@
         const source=effective===currentOverride?'gathering override':effective===playerDefault?'player default':'house background playlist';
         $('host-background-status').textContent=(current.device===selected&&(background.message||health.background_message))||
             (effective.uri?'Background music uses the '+source+(effective.name?' · '+effective.name:''):'');
-        $('save').textContent=!running?'Start session':moving?'Move session here':dirty?'Apply & restart session':'Restart session';
+        $('save').disabled=starting;
+        $('save').textContent=starting?'Starting…':!running?'Start session':moving?'Move session here':dirty?'Apply & restart session':'Restart session';
         $('save').classList.toggle('secondary',running&&!dirty&&!moving);
         $('save').hidden=running&&!dirty&&!moving;
         $('host-pending').hidden=!dirty;
@@ -271,48 +275,51 @@
             try{await saveBackground(input,scope,status);}finally{if(submit)submit.disabled=false;}
         };
     }
+    const welcome=$('host-player-welcome'), welcomeAccent=$('host-player-accent');
+    const power=$('host-player-power');
     function renderPlayerCopy(current, selected){
         const name=$('devices').selectedOptions[0]?.dataset.name;
-        for(const [key, values, inherited] of [
-            ['headline',current.player_headlines,current.room?.copy.headline],
-            ['welcome',current.player_welcomes,name?'Welcome to '+name:'']
-        ]){
-            const input=$('host-player-'+key);
-            const accent=$('host-player-accent');
-            if(input.dataset.device!==selected){
-                delete input.dataset.dirty;
-                if(key==='headline')delete accent.dataset.dirty;
-                input.dataset.device=selected||'';
-            }
-            const value=values?.[selected];
-            if(!input.dataset.dirty)input.value=value??'';
-            $('host-player-'+key+'-current').textContent='Default: '+(inherited||'Hidden')+' · Current: '+(value===undefined?'Default':value||'Hidden');
-            if(key==='headline'){
-                if(!accent.dataset.dirty)accent.value=current.player_accents?.[selected]||'';
-                updatePlayerPreview();
-            }
+        if(welcome.dataset.device!==selected){
+            delete welcome.dataset.dirty;
+            delete welcomeAccent.dataset.dirty;
+            delete power.dataset.dirty;
+            welcome.dataset.device=selected||'';
         }
+        const value=current.player_welcomes?.[selected];
+        const inherited=name?'Welcome to '+name:'';
+        if(!welcome.dataset.dirty)welcome.value=value??'';
+        if(!welcomeAccent.dataset.dirty)welcomeAccent.value=current.player_accents?.[selected]||'';
+        if(!power.dataset.dirty)power.checked=current.player_auto_start?.[selected]!==false;
+        $('host-player-welcome-current').textContent='Default: '+(inherited||'Unavailable')+' · Current: '+(value===undefined?inherited||'Unavailable':value||'Hidden');
+        $('host-player-power-status').textContent=current.boot_start_status?.[selected]?.message||'';
+        updatePlayerPreview();
     }
     function updatePlayerPreview(){
-        if(typeof renderHeadline==='function')renderHeadline($('host-player-headline-preview'),$('host-player-headline').value,$('host-player-accent').value);
+        if(typeof renderHeadline==='function')renderHeadline($('host-player-welcome-preview'),welcome.value,welcomeAccent.value);
     }
-    for(const key of ['headline','welcome']){
-        const input=$('host-player-'+key);
-        input.oninput=()=>{input.dataset.dirty='true';updatePlayerPreview();};
-        const save=async restore=>{
-            const status=$('host-player-'+key+'-status');
-            try{
-                await api('/api/host/player-'+key,{device:$('devices').value,[key]:input.value,restore,accent:$('host-player-accent').value});
-                delete input.dataset.dirty;
-                if(key==='headline')delete $('host-player-accent').dataset.dirty;
-                await refresh();
-                status.textContent=restore?'Default restored.':'Saved.';
-            }catch(error){status.textContent=error.message;}
-        };
-        $('host-player-'+key+'-form').onsubmit=event=>{event.preventDefault();save(false);};
-        $('host-player-'+key+'-restore').onclick=()=>save(true);
+    for(const field of [welcome,welcomeAccent])field.oninput=()=>{field.dataset.dirty='true';updatePlayerPreview();};
+    async function saveWelcome(restore){
+        const status=$('host-player-welcome-status');
+        try{
+            await api('/api/host/player-welcome',{device:$('devices').value,welcome:welcome.value,restore,accent:welcomeAccent.value});
+            delete welcome.dataset.dirty;
+            delete welcomeAccent.dataset.dirty;
+            await refresh();
+            status.textContent=restore?'Default restored.':'Saved.';
+        }catch(error){status.textContent=error.message;}
     }
-    $('host-player-accent').oninput=event=>{event.target.dataset.dirty='true';updatePlayerPreview();};
+    $('host-player-welcome-form').onsubmit=event=>{event.preventDefault();saveWelcome(false);};
+    $('host-player-welcome-restore').onclick=()=>saveWelcome(true);
+    power.onchange=()=>{power.dataset.dirty='true';};
+    $('host-player-power-form').onsubmit=async event=>{
+        event.preventDefault();
+        try{
+            await api('/api/host/player-auto-start',{device:$('devices').value,enabled:power.checked});
+            delete power.dataset.dirty;
+            await refresh();
+            notify('Power-on setting saved.');
+        }catch(error){notify(error.message);}
+    };
     controls.querySelectorAll('[data-background-pick]').forEach(button=>{
         button.onclick=()=>openBackgroundPlaylistPicker(button.dataset.backgroundPick);
     });

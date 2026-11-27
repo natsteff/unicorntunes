@@ -387,20 +387,19 @@ class RoomFeatures(RequestHistory):
             if owner:
                 now['requested_by'] = owner[0] or SHY
         host = self.sessions.get(sid, {}).get('host')
-        player_headlines = self.meta('player_headlines', {})
         welcomes = self.meta('player_welcomes', {})
         player_name = self.meta('player_names', {}).get(self.device)
-        welcome = welcomes.get(self.device, 'Welcome to ' + player_name if player_name else '')
+        welcome = welcomes.get(self.device, 'Welcome to ' + player_name if player_name else '') if self.device else None
         maintenance = self.meta('soloist_update_status', {}) if host else {}
-        return {'welcome_line': welcome,
+        return {'welcome_headline': welcome,
+                'player_auto_start': self.meta('player_auto_start', {}) if host else {},
+                'boot_start_status': self.meta('boot_start_status', {}) if host else {},
                 'soloist_expiry_warning': bool(maintenance.get('device') == self.device and maintenance.get('expiry_warning')),
                 'soloist_schedule_warning': self.meta('soloist_update_schedule_message', '') if host else '',
                 'player_welcomes': welcomes if host else {},
-                'welcome_headline': player_headlines.get(self.device),
-                'player_accents': self.meta('player_accents', {}) if host else {},
-                'headline_accent': self.meta('player_accents', {}).get(self.device, '')
-                    if self.device in player_headlines else self.room.get('headline_accent', ''),
-                'player_headlines': player_headlines if host else {},
+                'player_accents': self.meta('player_welcome_accents', {}) if host else {},
+                'headline_accent': self.meta('player_welcome_accents', {}).get(self.device, '')
+                    if self.device else self.room.get('headline_accent', ''),
                 'soloist_update_schedule': self.meta('soloist_update_schedule', {}) if host else {},
                 'background_music': self.background_state() if self.sessions.get(sid, {}).get('host') else None, 'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
                 'local_player': dict(self.local_config, count=self.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0]) if self.sessions.get(sid, {}).get('host') else None,
@@ -502,29 +501,32 @@ class RoomFeatures(RequestHistory):
             # Rules affect future selections too. Host can remove newly blocked waiting tracks explicitly.
             f.private_write(self.data / 'room.json', proposal)
             self.room = proposal
-        elif route in ('/api/host/player-headline', '/api/host/player-welcome'):
+        elif route in ('/api/host/player-welcome', '/api/host/player-auto-start'):
             device = str(body.get('device', ''))
             if not device or (device != self.device and not any(
                 item.get('id') == device and not item.get('is_restricted')
                 for item in self.api.call('/me/player/devices').get('devices', [])
             )):
                 raise f.Failure('Choose an available player before saving its welcome heading.')
-            is_headline = route.endswith('headline')
-            key = 'player_headlines' if is_headline else 'player_welcomes'
-            values = self.meta(key, {})
-            value = str(body.get('headline' if is_headline else 'welcome', '')).strip()[:300]
+            if route.endswith('auto-start'):
+                enabled = body.get('enabled')
+                if type(enabled) is not bool:
+                    raise f.Failure('Choose whether this player should start at power-on.')
+                self.set_meta('player_auto_start', dict(self.meta('player_auto_start', {}), **{device:enabled}))
+                return {'ok':True}
+            values = self.meta('player_welcomes', {})
+            accents = self.meta('player_welcome_accents', {})
+            value = str(body.get('welcome', '')).strip()[:300]
+            accents.pop(device, None)
             if body.get('restore'):
                 values.pop(device, None)
             else:
                 values[device] = value
-            self.set_meta(key, values)
-            if is_headline:
-                accents = self.meta('player_accents', {})
                 accent = str(body.get('accent', ''))[:300]
-                accents.pop(device, None)
-                if not body.get('restore') and accent and accent in value:
+                if accent and accent in value:
                     accents[device] = accent
-                self.set_meta('player_accents', accents)
+            self.set_meta('player_welcomes', values)
+            self.set_meta('player_welcome_accents', accents)
         elif route == '/api/host/location':
             name, device = str(body.get('name', '')).strip()[:60], str(body.get('device', ''))
             if not name:
@@ -542,6 +544,8 @@ class RoomFeatures(RequestHistory):
             f.private_write(self.data / 'room.json', proposal)
             self.room = proposal
         elif route == '/api/host/gathering':
+            if self.startup_pending:
+                raise f.Failure('Wait for startup confirmation or stop the session first.')
             if self.db.execute("SELECT 1 FROM songs WHERE state IN ('sending','accepted','queued','uncertain')").fetchone():
                 raise f.Failure('Resolve handed-off tracks before starting a new gathering.')
             self.enabled = False

@@ -194,6 +194,35 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(self.app.effective_background('speaker')['uri'], CONTEXT)
         self.assertEqual(self.app.effective_background('other')['uri'], other)
 
+    def test_delayed_contextless_start_releases_first_request_without_retrying_context(self):
+        self.save_background()
+        item = self.spotify.state['item']
+        self.spotify.state.update(is_playing=False, item=None, shuffle_state=False, repeat_state='off')
+        self.app.start_session('speaker', True)
+        self.assertEqual(self.app.health()['status'], 'Starting')
+        self.app.submit(self.sid, A)
+        self.spotify.state.update(is_playing=True, item=item, context=None, progress_ms=200)
+        self.app.poll(True)
+        self.assertFalse(self.app.enabled)
+        self.app.startup_pending['grace'] = 0
+        self.spotify.state['progress_ms'] = 1200
+        self.app.poll(True)
+        self.assertTrue(self.app.enabled)
+        writes = [event[3] for event in self.events if event[:3]==('spotify','/me/player/play','PUT')]
+        self.assertEqual(writes, [{'context_uri':CONTEXT},{'uris':[A]}])
+
+    def test_nonmatching_context_cannot_confirm_start_and_host_stop_cancels_pending(self):
+        self.save_background()
+        self.spotify.state.update(is_playing=False, item=None)
+        self.app.start_session('speaker', True)
+        self.spotify.state.update(is_playing=True, item={'uri':A}, context={'uri':'spotify:playlist:'+'z'*22})
+        self.app.poll(True)
+        self.assertEqual(self.app.health()['status'], 'Starting')
+        self.app.action(self.sid, '/api/host/stop', {})
+        self.assertIsNone(self.app.startup_pending)
+        self.app.poll(True)
+        self.assertFalse(self.app.enabled)
+
     def test_house_fallback_requires_definitive_failure_and_idle_target(self):
         house = 'spotify:playlist:' + 'h'*22
         self.app.action(self.sid, '/api/host/background', {'scope':'house','uri':house,'name':'House'})
