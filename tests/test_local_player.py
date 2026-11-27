@@ -44,7 +44,7 @@ class LocalPlayerTests(unittest.TestCase):
         self.app.local.call.side_effect = [{'job':'1'}, {'updating':False,'agent_version':6}, {'items':[song]}, {'started':True}]
         self.assertEqual(self.app.scan_local(), {'count':1,'loudness':{'started':True}})
         self.assertEqual([c.args[0] for c in self.app.local.call.call_args_list], ['scan','status','library','loudness_start'])
-        self.app.api.call.assert_not_called()
+        self.app.api.api.call.assert_not_called()
         self.assertEqual(self.app.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0], 1)
 
     def test_old_agent_indexes_without_starting_obsolete_copy_job(self):

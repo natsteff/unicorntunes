@@ -24,9 +24,10 @@ TRACK = re.compile(r'^spotify:track:[A-Za-z0-9]{22}$')
 
 
 class Failure(Exception):
-    def __init__(self, message, uncertain=False):
+    def __init__(self, message, uncertain=False, status=None):
         super().__init__(message)
         self.uncertain = uncertain
+        self.status = status
 
 
 def private_write(path, value):
@@ -47,10 +48,11 @@ def load(path):
         raise Failure('Run setup and login first.')
 
 
-def request_json(url, method='GET', body=None, headers=None):
+def request_json(url, method='GET', body=None, headers=None, on_response=None):
     request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
+            if on_response:on_response(response.status)
             # Player mutations have no response document; acceptance is not playback.
             if url.startswith('https://api.spotify.com/v1/') and method != 'GET':
                 return {}
@@ -60,8 +62,8 @@ def request_json(url, method='GET', body=None, headers=None):
         # Never print remote response bodies, authorization codes or tokens.
         retry = error.headers.get('Retry-After', 'unspecified')
         if error.code == 429:
-            raise Failure('Spotify returned 429; stop and retry after %s seconds. Quota may require a longer wait.' % retry)
-        raise Failure('Spotify HTTP %s. Check account, scopes and device; no automatic retry.' % error.code)
+            raise Failure('Spotify returned 429; stop and retry after %s seconds. Quota may require a longer wait.' % retry, status=429)
+        raise Failure('Spotify HTTP %s. Check account, scopes and device; no automatic retry.' % error.code, status=error.code)
     except (OSError, ValueError) as error:
         raise Failure('Network/response failure; reconcile before retrying a playback command.', uncertain=method != 'GET') from error
 
@@ -93,11 +95,13 @@ class Spotify:
         if params:
             url += '?' + urllib.parse.urlencode(params)
         try:
+            self.last_status = None
             return request_json(url, method, json.dumps(payload).encode() if payload is not None else None,
-                                {'Authorization': 'Bearer ' + self.token(), 'Content-Type': 'application/json'})
+                                {'Authorization': 'Bearer ' + self.token(), 'Content-Type': 'application/json'},
+                                on_response=lambda status: setattr(self, 'last_status', status))
         except Failure as error:
             # Fixed API path only: no query, account ID, token or response body.
-            raise Failure(method + ' ' + path + ': ' + str(error), uncertain=error.uncertain) from error
+            raise Failure(method + ' ' + path + ': ' + str(error), uncertain=error.uncertain, status=error.status) from error
 
 
 class Ledger:

@@ -19,6 +19,7 @@ import foxtunes as f
 from room import RoomFeatures
 from local_player import LocalPlayback
 from background_playback import BackgroundPlayback
+from diagnostics import Diagnostics, ObservedSpotify, DiagnosticFeatures, category
 
 
 def track(item):
@@ -61,7 +62,7 @@ def search_options(query):
     return ' '.join(parts), title.casefold() if exact else None
 
 
-class App(RoomFeatures, LocalPlayback, BackgroundPlayback):
+class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
     def __init__(self, data=f.DATA, api=None):
         self.data, self.api = data, api or f.Spotify(data)
         data.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -106,6 +107,12 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback):
         self.room_init()
         self.idle_ready = False
         self.local_init()
+        self.diagnostics = Diagnostics()
+        self.account_cache = {'status':'unverified','display_name':None,'verified_at':None}
+        self.account_due, self.account_fingerprint = 0, None
+        self.api = ObservedSpotify(self.api, self)
+        self.last_dispatch_reason = None
+        self.diagnostics.emit('server.started', snapshot=self.diagnostic_snapshot())
 
     def session(self, sid, create=True):
         now = time.time()
@@ -194,6 +201,28 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback):
         self.db.commit()
 
     def poll(self, force=False):
+        if not force and time.monotonic() < self.next_poll:
+            return
+        with self.diagnostics.operation():
+            before = self.diagnostic_snapshot()
+            old_failure = (self.error, self.reason)
+            try:
+                return self._poll_state(force)
+            except Exception as error:
+                self.diagnostics.failure('poll.failure', before, category(error))
+                raise
+            finally:
+                if (self.error, self.reason) != old_failure and self.error:
+                    self.diagnostics.failure('playback.failure', before, 'handoff_stopped')
+                if not before['idle'] and self.idle_ready:
+                    self.diagnostics.emit('playback.end_observed', snapshot=before)
+                self.diagnostics.observe(self.diagnostic_snapshot())
+                reason = self.dispatch_reason()
+                if reason != self.last_dispatch_reason:
+                    self.last_dispatch_reason = reason
+                    self.diagnostics.emit('dispatch.state', reason=reason)
+
+    def _poll_state(self, force=False):
         if not force and time.monotonic() < self.next_poll:
             return
         self.next_poll = time.monotonic() + (1 if time.monotonic() < self.quick_poll_until else 5 if self.enabled else 20)
@@ -499,6 +528,23 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback):
             raise f.Failure(self.reason)
 
     def action(self, sid, route, body):
+        observed = route in ('/api/host/start','/api/host/stop','/api/host/pause',
+                            '/api/host/resume','/api/host/skip','/api/host/background',
+                            '/api/host/reconcile','/api/request','/api/vote')
+        with self.diagnostics.operation():
+            before = self.diagnostic_snapshot()
+            if observed:self.diagnostics.emit('action.started', action=route, snapshot=before)
+            try:
+                result = self._action(sid, route, body)
+            except Exception as error:
+                if observed or (route.startswith('/api/host/') and self.sessions.get(sid,{}).get('host')):
+                    self.diagnostics.failure('action.failed', before, category(error))
+                raise
+            if observed:
+                self.diagnostics.emit('action.completed', action=route, snapshot=self.diagnostic_snapshot())
+            return result
+
+    def _action(self, sid, route, body):
         session = self.sessions[sid]
         if route == '/api/host/login':
             self.limit('login', 10, 300)
@@ -508,6 +554,10 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback):
             return {'ok': True}
         if route.startswith('/api/host/') and not session['host']:
             raise PermissionError('Host access required.')
+        if route == '/api/host/diagnostics':
+            return self.diagnostic_report()
+        if route == '/api/host/account':
+            return self.account_info()
         handled = self.local_action(sid, route, body)
         if handled is not None:
             return handled

@@ -249,3 +249,14 @@ bash /tmp/update-unicorntunes-agent.sh
 ```
 
 The helper reports `agent_version: 7` and does not restart Soloist/MPD or alter SSH permissions. Existing local playback and analysis remain compatible with agent 6. After updating, confirm the local connection, test Pause/Resume and check source transitions at a conservative volume.
+
+
+## Spotify account and playback diagnostics (v0.8.1)
+
+The authenticated host's Playback summary shows the Spotify **display name authorized for UnicornTunes**. Setup & troubleshooting includes its verification time and a Check account button. This is not independent verification of Soloist pairing; pair the playback device with the same intended account. No email or account ID is displayed. Successful lookups are cached for five minutes; failures for one minute. Changing or removing stored authorization invalidates the cache on the next check. An unsuccessful check shows Unable to verify instead of retaining a potentially misleading account name. Account lookups do not run on every playback poll and do not request new scopes.
+
+Structured JSON diagnostics go to container stdout. Run `docker compose logs --since 15m foxtunes` to inspect recent events. Log fields include UTC time, a per-operation correlation ID, host playback actions, Spotify method/endpoint, mutation acceptance or HTTP failure status, elapsed time, observed track/device/playback changes, request IDs/states, dispatch holds and background restoration state. Successful unchanged polls are not logged; slow reads and repeated queue anomalies are logged with suppression. An accepted Spotify command is not proof of observed playback. Pauses without a corresponding host action remain observations, not proof of who issued them.
+
+Under **Setup & troubleshooting → Playback diagnostics**, Download diagnostic report exports the most recent 200 events, up to five pre-failure snapshots and current sanitized state. Snapshots include up to 100 active requests. Reports omit account/guest names, song titles, search queries, raw Spotify bodies/errors, device names/addresses, tokens, cookies, passwords and SSH paths/keys. Track, context and player identifiers are salted hashes consistent within one running process. They change after restart. Reports still contain activity timestamps, internal request IDs and playback timing; review before sharing.
+
+In-memory reports reset when the container restarts; Docker logs follow the existing Compose rotation limit (three files of 5 MB). Recreating/removing the container can discard its old Docker logs. Download a report or save reviewed logs **before** restarting/updating during an incident. These diagnostics do not collect raw Soloist/Pine64 journals, restart the player, retry failed playback commands or change request scheduling. Capture the report while the fault is present, then compare event correlation IDs, timestamps and the failed Spotify operation before choosing recovery actions.

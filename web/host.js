@@ -15,7 +15,7 @@
     shell.innerHTML = `
       <div class="host-overview">
         <div><span class="host-eyebrow">SESSION STATUS</span><h3 id="host-state">Checking session…</h3><p id="host-now"></p><p id="host-next-step" role="status"></p></div>
-        <div class="host-destination"><span class="host-eyebrow">CURRENT PLAYER</span><strong id="host-current-player">No player selected</strong><span id="host-request-state"></span></div>
+        <div class="host-destination"><span class="host-eyebrow">CURRENT PLAYER</span><strong id="host-current-player">No player selected</strong><span id="host-request-state"></span><p id="host-account-summary" class="muted">Spotify account: checking…</p></div>
       </div>
       <div class="host-navigation" role="tablist" aria-label="Host sections">
         <button id="host-tab-playback" type="button" role="tab" aria-controls="host-panel-playback" aria-selected="true">Playback</button>
@@ -52,7 +52,7 @@
       <section id="host-panel-setup" class="host-panel" role="tabpanel" aria-labelledby="host-tab-setup" tabindex="0" hidden>
         <div class="host-panel-heading"><h3>Setup &amp; troubleshooting</h3><p>Connect accounts and players, manage locations or diagnose a connection. You do not need to revisit this for each listening session.</p></div>
         <div class="host-card" id="host-spotify-slot"><h4>Spotify authorization</h4><p class="muted">Use the same Spotify account as the playback device. Reconnect only when changing accounts, granting permissions or fixing authorization.</p></div>
-        <div id="host-local-slot"></div><div class="host-card" id="host-recovery-slot"></div><div id="host-locations-slot"></div>
+        <div class="host-card"><h4>Connected Spotify account</h4><p id="host-account-details" role="status">Checking authorization…</p><p class="muted">This is UnicornTunes' authorized Spotify account. It does not independently verify Soloist pairing. Account checks are cached for up to five minutes.</p><button id="host-account-refresh" type="button" class="secondary">Check account</button></div><div class="host-card"><h4>Playback diagnostics</h4><p>Download recent actions, transitions and failures for troubleshooting. Credentials, account names and raw Spotify responses are omitted. Track/player identifiers are hashed. Reports cover recent activity since this container started.</p><button id="host-diagnostics-download" type="button" class="secondary">Download diagnostic report</button><p id="host-diagnostics-status" role="status"></p></div><div id="host-local-slot"></div><div class="host-card" id="host-recovery-slot"></div><div id="host-locations-slot"></div>
       </section>
       <div class="host-account-row"><a href="/">Open guest page ↗</a><div id="host-logout-slot"></div></div>`;
     controls.replaceChildren(shell);
@@ -104,7 +104,8 @@
     window.showHostSection=select;
     $('save').setAttribute('aria-describedby','host-start-help');
     window.renderHostDesk=(current,dirty)=>{
-        if(!current.host){select('playback');return;}
+        if(!current.host){select('playback');accountLoaded=false;clearTimeout(accountTimer);showAccount({status:'unavailable'});return;}
+        if(!accountLoaded)checkAccount();
         const health=current.handoff||{}, running=!!current.enabled;
         $('host-state').textContent=health.status|| (running?'Running':'Stopped');
         const warning=health.status==='Needs attention'||!!current.error||!!health.stale;
@@ -133,6 +134,11 @@
         $('host-pending').textContent='Changes not yet applied. '+(running?'Moving or restarting can affect playback.':'Start the session to apply them.');
         $('host-start-help').textContent=running?(moving?'Move playback and future requests to the selected player.':'Session running. Change the player or request setting above to move or apply changes.'):'Activate the selected player and enable automatic requests. Shuffle and repeat are turned off.';
     };
+    let accountTimer, accountLoading=false, accountLoaded=false;
+    function showAccount(value){const label=value.status==='verified'?value.display_name:value.status==='not_connected'?'Not connected':'Unable to verify';$('host-account-summary').textContent='Spotify account: '+label;$('host-account-details').textContent=label+(value.verified_at?' · Verified '+new Date(value.verified_at*1000).toLocaleString():'');}
+    async function checkAccount(){if(accountLoading)return;accountLoading=true;accountLoaded=true;clearTimeout(accountTimer);$('host-account-refresh').disabled=true;try{const value=await api('/api/host/account',{});if(window.hostDeskState?.host)showAccount(value);}catch(error){showAccount({status:'unavailable'});}finally{accountLoading=false;$('host-account-refresh').disabled=false;if(window.hostDeskState?.host)accountTimer=setTimeout(checkAccount,300000);}}
+    $('host-account-refresh').onclick=checkAccount;
+    $('host-diagnostics-download').onclick=async()=>{const b=$('host-diagnostics-download');b.disabled=true;try{const report=await api('/api/host/diagnostics',{});const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='unicorntunes-diagnostics.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('host-diagnostics-status').textContent='Report downloaded. It contains recent diagnostic events; review before sharing.';}catch(error){$('host-diagnostics-status').textContent='Unable to download diagnostics. Sign in and try again.';}finally{b.disabled=false;}};
     $('host-background-uri').addEventListener('input',()=>{$('host-background-uri').dataset.dirty='true';});
     $('host-background-form').onsubmit=async event=>{event.preventDefault();const b=event.currentTarget.querySelector('button');b.disabled=true;try{await api('/api/host/background',{uri:$('host-background-uri').value,device:window.hostDeskState.device});delete $('host-background-uri').dataset.dirty;await refresh();}catch(error){$('host-background-status').textContent=error.message;}finally{b.disabled=false;}};
     $('devices').addEventListener('change',()=>window.renderHostDesk(window.hostDeskState||{},true));

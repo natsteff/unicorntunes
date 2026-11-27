@@ -159,9 +159,9 @@ class LoudnessHostTests(unittest.TestCase):
         self.app.local.call.return_value={'ready':True}
         self.app.submit(self.sid,URI);row=self.app.queue(self.sid)[0]
         self.app.local.call.side_effect=[{'state':'stop'},{'ready':False}]
-        self.app.api.call.reset_mock()
+        self.app.api.api.call.reset_mock()
         with self.assertRaises(f.Failure):self.app.start_local_request(row,{'device':{'id':'speaker'},'is_playing':True})
-        self.app.api.call.assert_not_called()
+        self.app.api.api.call.assert_not_called()
         self.assertEqual(self.app.queue(self.sid)[0]['state'],'waiting')
 
     def test_matched_play_request_uses_prepared_mode_and_output(self):
