@@ -459,10 +459,10 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         locked = self.db.execute("SELECT 1 FROM songs WHERE state IN ('accepted','queued','playing')").fetchone()
         startup_context = None if seed_local or locked else self.effective_background(device).get('uri')
         start_waiting_spotify = bool(seed_local and not locked and not seed_local['uri'].startswith('local:'))
-        if startup_context:
-            current = self.api.call('/me/player')
-            if (current.get('device') or {}).get('id') == device and current.get('is_playing'):
-                startup_context = None
+        current = self.api.call('/me/player')
+        already_selected = (current.get('device') or {}).get('id') == device
+        if already_selected and current.get('is_playing'):
+            startup_context = None
         # A remote mutation may change playback even if its response is lost.
         # Stop dispatch until the selected target and playing state are observed.
         self.enabled = False
@@ -485,13 +485,14 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                     if not self.confirm_background_start(state):
                         self.request_playback_refresh()
                 return
-            self.api.call('/me/player', 'PUT', {'device_ids': [device], 'play': not start_waiting_spotify})
-            observed = {}
-            for attempt in range(4):
-                observed = self.api.call('/me/player')
-                if (observed.get('device') or {}).get('id') == device:
-                    break
-                time.sleep(0.5)
+            observed = current
+            if not already_selected:
+                self.api.call('/me/player', 'PUT', {'device_ids': [device], 'play': not start_waiting_spotify})
+                for _ in range(4):
+                    observed = self.api.call('/me/player')
+                    if (observed.get('device') or {}).get('id') == device:
+                        break
+                    time.sleep(0.5)
             if (observed.get('device') or {}).get('id') != device:
                 raise f.Failure('Spotify accepted the transfer but the player has not become active. Handoff remains stopped; try Start again after checking player status.')
             previous_device = self.device
@@ -576,6 +577,14 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                     pending = chosen = None
             if not pending:
                 chosen = next((r for r in self.queue('') if r['state'] == 'waiting'), None)
+            owned = self.db.execute(
+                "SELECT 1 FROM songs s JOIN request_attempts a ON a.song=s.id "
+                "WHERE s.state='playing' AND s.uri=? AND a.device=? AND a.confirmed=1",
+                (before_uri, self.device),
+            ).fetchone()
+            if not chosen and owned and resume:
+                self.finish_last_request_skip(before)
+                return
             if chosen and not pending:
                 self.check_rules(chosen)
                 self.commit_selection(chosen['id'])
@@ -673,6 +682,18 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         elif route == '/api/vote':
             self.limit(('vote', sid), 30)
             self.vote(sid, int(body['id']))
+        elif route == '/api/host/accepting':
+            if type(body.get('accepting')) is not bool:
+                raise f.Failure('Choose whether to accept guest requests.')
+            accepting = body['accepting']
+            f.private_write(self.data / 'settings.json', {'device':self.device, 'accepting':accepting})
+            self.accepting = accepting
+            if self.startup_pending:
+                self.startup_pending['accepting'] = accepting
+        elif route == '/api/host/end-session':
+            if body.get('confirm') is not True:
+                raise f.Failure('Confirm before shutting down the player and archiving the queue.')
+            return self.end_linked_session(body.get('device'))
         elif route == '/api/host/start':
             self.start_session(str(body.get('device', '')), bool(body.get('accepting', True)))
         elif route == '/api/host/stop':
@@ -743,6 +764,8 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             scope = body.get('scope', 'player')
             name = str(body.get('name') or '').strip()[:200]
             if scope == 'gathering':
+                if 'gathering' in body and body['gathering'] != self.meta('gathering'):
+                    raise f.Failure('The gathering changed. Recheck the active settings and try again.')
                 self.set_meta('background_override', {'uri': uri, 'name': name, 'gathering': self.meta('gathering')} if uri else {})
             elif scope == 'house':
                 self.set_meta('house_background', {'uri': uri, 'name': name} if uri else {})

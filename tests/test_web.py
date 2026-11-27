@@ -317,6 +317,15 @@ class SessionStartTests(unittest.TestCase):
         self.app.action(self.sessions[0],'/api/host/stop',{})
         self.assertFalse(self.app.enabled)
 
+    def test_start_on_active_background_keeps_audio_and_waiting_request(self):
+        self.api.state.update(shuffle_state=False, repeat_state='off')
+        self.app.submit(self.sessions[0], B)
+        self.app.start_session('speaker', True)
+        self.assertTrue(self.app.enabled)
+        self.assertFalse(any(method != 'GET' for _, method, _ in self.api.calls))
+        self.app.poll(force=True)
+        self.assertTrue(any(path == '/me/player/play' and method == 'PUT' for path, method, _ in self.api.calls))
+
     def test_start_no_context_seeds_local_request(self):
         from unittest.mock import patch
         self.app.submit(self.sessions[0],A)

@@ -47,7 +47,7 @@ function renderBackgroundPlaylists(){
     const filter=$('background-playlist-filter').value.trim().toLocaleLowerCase();
     for(const playlist of backgroundRows){
         if(filter&&!playlist.name.toLocaleLowerCase().includes(filter))continue;
-        const row=playlistRow(playlist), save=el('button','Save as background','secondary');
+        const row=playlistRow(playlist), save=el('button','Use this playlist','secondary');
         save.onclick=async()=>{
             save.disabled=true;
             const scope=$('background-playlist-scope').value;
@@ -56,7 +56,7 @@ function renderBackgroundPlaylists(){
             const generation=backgroundPickerGeneration;
             try{
                 if(scope==='player'&&(!device||device!==$('devices').value))throw Error('Choose the player again before saving.');
-                await api('/api/host/background',{uri:'spotify:playlist:'+playlist.id,name:playlist.name,scope,device});
+                await api('/api/host/background',{uri:'spotify:playlist:'+playlist.id,name:playlist.name,scope,device,...(scope==='gathering'?{gathering:state.gathering}:{})});
                 const field=$(scope==='player'?'host-background-uri':scope==='gathering'?'host-override-uri':'host-house-uri');
                 delete field.dataset.dirty;
                 await refresh();

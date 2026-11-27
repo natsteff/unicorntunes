@@ -95,13 +95,13 @@ class BackgroundPlayback:
         self.background_armed = True
         self.background_message = ''
 
-    def restore_background(self, state):
+    def restore_background(self, state, *, skipping=False):
         if not self.enabled or not self.idle_ready or not self.background_armed or self.local_active:
             return
         if self.db.execute("SELECT 1 FROM songs WHERE state IN ('waiting','sending','accepted','queued','uncertain','playing')").fetchone():
             return
         actual = (state.get('device') or {}).get('id')
-        if state.get('is_playing') or (actual and actual != self.device):
+        if (state.get('is_playing') and not skipping) or (actual and actual != self.device):
             return
         saved = self.effective_background(self.device)
         self.background_armed = False  # One attempt, including timeout/403; never retry blindly.
@@ -116,6 +116,34 @@ class BackgroundPlayback:
                                    'fallback': started_uri != saved['uri']}
         self.idle_ready = False
         self.next_poll = 0
+        self.request_playback_refresh()
+
+    def finish_last_request_skip(self, state):
+        """End an owned request, then use the normal verified background path."""
+        saved = self.effective_background(self.device)
+        if state.get('is_playing') and not saved.get('uri'):
+            self.api.call('/me/player/pause', 'PUT', params={'device_id':self.device})
+            for _ in range(4):
+                observed = self.api.call('/me/player')
+                if (observed.get('device') or {}).get('id') not in (None, self.device):
+                    raise f.Failure('Spotify moved to another player while ending the request.')
+                if not observed.get('is_playing'):
+                    state = observed
+                    break
+                time.sleep(0.5)
+            else:
+                raise f.Failure('Could not confirm that the last request stopped.')
+        self.db.execute("UPDATE songs SET state='past',detail='Host skipped final request' WHERE state='playing'")
+        self.db.execute("UPDATE plays SET outcome='skipped' WHERE outcome='observing'")
+        self.db.commit()
+        self.enabled, self.idle_ready, self.now = True, True, None
+        self.reason = self.error = ''
+        self.arm_background()
+        try:
+            self.restore_background(state, skipping=True)
+        except f.Failure:
+            self.enabled = False
+            raise
         self.request_playback_refresh()
 
     def verify_background(self, state):

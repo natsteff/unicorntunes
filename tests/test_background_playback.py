@@ -223,6 +223,17 @@ class BackgroundTests(unittest.TestCase):
         self.app.poll(True)
         self.assertFalse(self.app.enabled)
 
+    def test_skipping_last_spotify_request_returns_to_background(self):
+        self.save_background()
+        self.owned(A)
+        self.events.clear()
+        self.app.skip_request()
+        writes = [event for event in self.events if event[0]=='spotify' and event[2]!='GET']
+        self.assertEqual([event[3] for event in writes], [{'context_uri':CONTEXT}])
+        self.assertTrue(self.app.enabled)
+        self.assertEqual(self.app.background_pending['uri'], CONTEXT)
+        self.assertEqual(self.app.db.execute('SELECT state FROM songs').fetchone()[0], 'past')
+
     def test_house_fallback_requires_definitive_failure_and_idle_target(self):
         house = 'spotify:playlist:' + 'h'*22
         self.app.action(self.sid, '/api/host/background', {'scope':'house','uri':house,'name':'House'})

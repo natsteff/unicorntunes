@@ -269,9 +269,12 @@ class LocalPlayback:
             self.boot_probe = None
             if probe['connection'] is self.local and probe['device'] == self.local_config.get('device'):
                 if probe['result'].get('upgrade_required'):
-                    self.update_boot_status(probe['device'], '', 'Install agent 9 to enable power-on start.')
+                    self.update_boot_status(probe['device'], '', 'Playback helper update needed.')
                 else:
-                    self.handle_player_boot(probe['device'], probe['result'])
+                    snapshot = probe['result']
+                    if snapshot.get('boot_id') and not self.meta('boot_start_status', {}).get(probe['device'], {}).get('boot_id'):
+                        self.update_boot_status(probe['device'], '', 'Playback helper is ready for power-on start.')
+                    self.handle_player_boot(probe['device'], snapshot)
             probe = None
         due = time.monotonic()
         device = self.local_config.get('device')
@@ -291,6 +294,38 @@ class LocalPlayback:
                 probe['result'] = {}
 
         threading.Thread(target=read_boot, daemon=True).start()
+
+    def end_linked_session(self, device):
+        if not device or device != self.device or not self.local_bound():
+            raise f.Failure('Select the active session’s linked Pine64 before ending it.')
+        self.mark_manual_playback_stop()
+        self.enabled = False
+        self.idle_ready = False
+        self.background_armed = False
+        self.background_pending = None
+        try:
+            result = self.local.call('power_off')
+            if result.get('shutdown_accepted') is not True:
+                raise f.Failure('The player did not confirm the shutdown request. The queue was kept.')
+        except f.Failure as error:
+            self.reason = self.error = ('Handoff stopped. Playback helper update needed for graceful shutdown.'
+                                        if 'Unknown action' in str(error) else 'Handoff stopped. ' + str(error))
+            if 'queue was kept' not in self.error.lower():
+                self.reason = self.error = self.error.rstrip('.') + '. The queue was kept.'
+            raise f.Failure(self.error) from error
+        settings = {'local_active':None, 'next_request':None, 'selection_count':0, 'background_override':{},
+                    'gathering':self.meta('gathering') + 1, 'gathering_started':time.time()}
+        with self.db:
+            self.db.execute("UPDATE songs SET state='removed',detail='Archived at end of session' "
+                            "WHERE state IN ('waiting','sending','accepted','queued','uncertain')")
+            self.db.execute("UPDATE songs SET state='past',detail='Session ended' WHERE state='playing'")
+            self.db.execute("UPDATE plays SET outcome='unknown' WHERE outcome='observing'")
+            self.db.executemany('INSERT OR REPLACE INTO room_meta VALUES(?,?)',
+                                [(key,json.dumps(value)) for key,value in settings.items()])
+        self.local_active = self.now = None
+        self.reason, self.error = 'Handoff stopped by host.', ''
+        self.request_playback_refresh()
+        return {'shutdown_accepted':True}
 
     def soloist_update(self, action):
         if not self.local_bound():
@@ -379,6 +414,19 @@ class LocalPlayback:
             self.set_meta('soloist_update_schedule_message', str(error))
 
     def local_action(self,sid,route,body):
+        if route == '/api/host/playback-helper':
+            device = body.get('device')
+            if not device or not self.local_config.get('enabled') or device != self.local_config.get('device'):
+                raise f.Failure('Link this player to a Pine64 before checking its playback helper.')
+            status = self.local.call('status')
+            version = status.get('agent_version')
+            ready = type(version) is int and version >= 9
+            if ready:
+                self.boot_probe_due = 0
+                previous = self.meta('boot_start_status', {}).get(device, {})
+                if not previous.get('boot_id'):
+                    self.update_boot_status(device, '', 'Playback helper is ready for power-on start.')
+            return {'version':version,'ready':ready,'shutdown_supported':type(version) is int and version >= 10}
         if route == '/api/host/soloist-update':
             action = body.get('action', 'status')
             if action == 'schedule':
@@ -440,6 +488,8 @@ class LocalPlayback:
             return self.local.call('loudness_start',target=validate_target(body.get('target',-14)))
         if route=='/api/host/loudness-cancel':return self.local.call('loudness_cancel')
         if route=='/api/host/loudness-config':
+            if 'device' in body and body['device'] != self.local_config.get('device'):
+                raise f.Failure('The linked player changed. Select the linked player and try again.')
             if self.local_active:raise f.Failure('Finish local playback before changing loudness mode.')
             from local_loudness import validate_target
             enabled=body.get('enabled') is True
@@ -672,6 +722,9 @@ class LocalPlayback:
             if actual and actual != self.device:
                 raise f.Failure('Another Spotify device is active; restart on the selected player.')
             if row: self.start_idle_request(row)
+            elif enabled:
+                self.finish_last_request_skip(state)
+                return
             else:
                 self.idle_ready = True
                 self.now = None

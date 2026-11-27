@@ -147,3 +147,15 @@ The MPD trial plays files accessible on the playback device independently of Spo
 ## Optional cached loudness analysis
 
 Install `ffmpeg` on the playback device and use the v0.7.0 restricted-agent update. Follow [cached loudness and automatic volume](LOCAL_FILES.md#cached-loudness-and-automatic-volume-v070). Each library scan analyzes new/changed files, skips valid cached results and prunes removed entries. Playback adjusts MPD volume on original files; no audio copies are generated. The final source balance needs a listening comparison on the installed output.
+
+## Enable graceful shutdown
+
+On the linked Pine64, use the published v0.8.5 release files. Run `bash deploy/update-local-agent.sh` as the existing UnicornTunes audio user to update the playback helper. Then run the following as an administrator, substituting the actual audio user if it differs:
+
+```sh
+sudo bash deploy/enable-player-shutdown.sh foxtunes
+```
+
+The helper can schedule one fixed systemd power-off command. The configuration grants the audio user permission for that exact command. Existing forced-command SSH restrictions still apply. The shutdown is scheduled five seconds after acceptance so the Docker server can receive the acknowledgement before the Pine64 goes offline.
+
+In **Host Desk → Playback**, select the linked session player and use **End Session**. Confirm the player name and queue reset. Wait for the board to power down before cutting power at the amp. If shutdown was not acknowledged, UnicornTunes keeps the queue and shows the result in the Host Desk.

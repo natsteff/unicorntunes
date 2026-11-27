@@ -143,6 +143,32 @@ class LocalPlayerTests(unittest.TestCase):
             self.assertEqual(start.call_count, 1)
             self.assertIn('Another player', self.app.meta('boot_start_status')['speaker']['message'])
 
+    def test_end_session_archives_only_after_linked_board_acknowledges(self):
+        self.app.device = 'speaker'
+        self.app.local_config.update(enabled=True, device='speaker')
+        self.app.db.execute("INSERT INTO songs(guest,uri,metadata,created,state) VALUES('guest','test','{}',0,'waiting')")
+        self.app.db.commit()
+        self.app.local = Mock()
+        route = '/api/host/end-session'
+        with self.assertRaises(f.Failure):
+            self.app.action(self.sid, route, {'device':'other','confirm':True})
+        self.app.local.call.assert_not_called()
+        self.app.local.call.return_value = {}
+        with self.assertRaises(f.Failure):
+            self.app.action(self.sid, route, {'device':'speaker','confirm':True})
+        self.assertEqual(self.app.db.execute('SELECT state FROM songs').fetchone()[0], 'waiting')
+        self.app.local.call.return_value = {'shutdown_accepted':True}
+        self.app.action(self.sid, route, {'device':'speaker','confirm':True})
+        self.assertEqual(self.app.db.execute('SELECT state FROM songs').fetchone()[0], 'removed')
+        self.assertEqual(self.app.meta('gathering'), 2)
+        self.assertFalse(self.app.enabled)
+
+    def test_power_off_uses_only_fixed_graceful_shutdown_command(self):
+        with patch('mpd_agent.subprocess.run', return_value=Mock(returncode=0)) as run:
+            self.assertTrue(mpd_agent.execute(None, {'action':'power_off','command':'ignored'})['shutdown_accepted'])
+            run.assert_called_once_with(['/usr/bin/sudo','-n','/usr/bin/systemd-run','--on-active=5s',
+                '--unit=unicorntunes-poweroff','/usr/bin/systemctl','poweroff','--no-wall'],capture_output=True,timeout=5)
+
     def test_protocol_quotes_filename_and_rejects_newlines(self):
         mpd=mpd_agent.MPD();mpd.file=io.BytesIO()
         # Validate before any command reaches the socket.

@@ -131,7 +131,7 @@ function field(grid,label,id,type='text',value=''){const wrap=el('label',label);
 function buildHostConfig(){if(typeof clearHostSections==='function')clearHostSections();const root=$('room-host-tools');root.replaceChildren();const details=el('details');details.id='host-room-config-panel';details.append(el('summary','Queue rules, theme & guest wording'));const form=el('form'),grid=el('div',undefined,'config-grid');form.id='host-room-config';form.name='host-room-config';form.autocomplete='off';const r=state.room;
 field(grid,'Fair queue enabled','cfg-fair','checkbox',r.fair_queue);field(grid,'Block explicit / unknown ratings','cfg-explicit','checkbox',r.block_explicit);
 field(grid,'Maximum track length (minutes; 0 = unlimited)','cfg-length','number',r.max_minutes);field(grid,'Repeat cooldown (minutes; 0 = off)','cfg-repeat','number',r.repeat_minutes);
-for(const id of ['cfg-length','cfg-repeat']){$(id)?.setAttribute('min','0');}
+for(const id of ['cfg-length','cfg-repeat']){const input=grid.querySelector('#'+id);input.min=0;input.required=true;}
 field(grid,'Blocked track names or Spotify URIs (one per line)','cfg-tracks','textarea',r.blocked_tracks.join('\n'));field(grid,'Blocked artist names (one per line)','cfg-artists','textarea',r.blocked_artists.join('\n'));
 field(grid,'Theme name','cfg-theme','text',r.theme);field(grid,'Suggested searches (one per line)','cfg-searches','textarea',r.theme_searches.join('\n'));
 const appForm=el('form',undefined,'host-card');appForm.id='host-app-config';const appGrid=el('div',undefined,'config-grid');
@@ -139,21 +139,28 @@ field(appGrid,'Stats timezone','cfg-timezone','text',r.timezone);
 appForm.append(el('p','Leave a field blank to hide it on the guest page.','muted'));
 for(const [key,label]of Object.entries({tagline:'Header tagline',headline:'Main headline',description:'Intro description',footer:'Footer tagline'})){const input=field(appGrid,label,'cfg-copy-'+key,'text',r.copy[key]);input.maxLength=300;const list=el('datalist');list.id='copy-options-'+key;for(const text of state.presets[key]||[]){const option=el('option');option.value=text;list.append(option);}input.setAttribute('list',list.id);appGrid.append(list);}
 addHeadlineAccent(appGrid,$('cfg-copy-headline')||appGrid.querySelector('#cfg-copy-headline'),'cfg-headline-accent',r.headline_accent);
-form.append(grid,el('p','Rules apply when requesting and when selecting a waiting track. Already handed-off Spotify tracks cannot be recalled. Blocked waiting requests remain visible for host removal.','muted'));form.append(el('button','Save room settings'));
-form.onsubmit=e=>{e.preventDefault();protectedAction(async()=>{
+const roomStatus=el('p',undefined,'muted');
+roomStatus.setAttribute('role','status');
+form.append(grid,el('p','Rules apply when requesting and when selecting a waiting track. Already handed-off tracks stay protected.','muted'),roomStatus);
+bindSettingsAutosave(form,{status:roomStatus,read:()=>{
     const lines=id=>$(id).value.split('\n').map(x=>x.trim()).filter(Boolean);
-    await api('/api/host/config',{fair_queue:$('cfg-fair').checked,block_explicit:$('cfg-explicit').checked,max_minutes:Number($('cfg-length').value),repeat_minutes:Number($('cfg-repeat').value),blocked_tracks:lines('cfg-tracks'),blocked_artists:lines('cfg-artists'),theme:$('cfg-theme').value,theme_searches:lines('cfg-searches')});
-    notify('Room settings saved.');await refresh();
-})();};
+    return {fair_queue:$('cfg-fair').checked,block_explicit:$('cfg-explicit').checked,max_minutes:$('cfg-length').valueAsNumber,
+        repeat_minutes:$('cfg-repeat').valueAsNumber,blocked_tracks:lines('cfg-tracks'),blocked_artists:lines('cfg-artists'),
+        theme:$('cfg-theme').value,theme_searches:lines('cfg-searches')};
+},apply:value=>api('/api/host/config',value)});
 details.append(form);root.append(details);
-const appActions=el('div',undefined,'buttons');const reset=el('button','Restore default wording','secondary');
-reset.type='button';reset.onclick=protectedAction(async()=>{await api('/api/host/config',{defaults:true});configBuilt=false;await refresh();});
-appActions.append(el('button','Save UnicornTunes settings'),reset);appForm.append(appGrid,appActions);
-appForm.onsubmit=e=>{e.preventDefault();protectedAction(async()=>{
-    const copy={};for(const key of ['tagline','headline','description','footer'])copy[key]=$('cfg-copy-'+key).value;
-    await api('/api/host/config',{copy,headline_accent:$('cfg-headline-accent').value,timezone:$('cfg-timezone').value});
-    notify('UnicornTunes settings saved.');await refresh();
-})();};
+const appActions=el('div',undefined,'buttons'), appStatus=el('p',undefined,'muted');
+appStatus.setAttribute('role','status');
+const reset=el('button','Restore default wording','secondary');
+reset.type='button';appActions.append(reset);appForm.append(appGrid,appActions,appStatus);
+const appAutosave=bindSettingsAutosave(appForm,{status:appStatus,read:()=>{
+    const copy={};
+    for(const key of ['tagline','headline','description','footer'])copy[key]=$('cfg-copy-'+key).value;
+    return {copy,headline_accent:$('cfg-headline-accent').value,timezone:$('cfg-timezone').value};
+},apply:value=>api('/api/host/config',value),saved:(_result,value)=>{
+    if(value.defaults){configBuilt=false;refresh();}
+}});
+reset.onclick=()=>appAutosave.submit({defaults:true});
 root.append(appForm);
 const locations=el('details');locations.id='host-locations-panel';locations.append(el('summary','Saved playback locations'));const locGrid=el('div',undefined,'config-grid');field(locGrid,'Location name','location-name');const saveLoc=el('button','Save selected player here','secondary');saveLoc.onclick=protectedAction(async()=>{await api('/api/host/location',{name:$('location-name').value,device:$('devices').value});configBuilt=false;await refresh();});locGrid.append(saveLoc);for(const [name,device]of Object.entries(r.locations)){const b=el('button','Start / move to '+name,'secondary');b.onclick=protectedAction(async()=>{await api('/api/host/start',{device,accepting:$('accepting').checked});settingsDirty=false;await refresh();});const remove=el('button','Remove '+name,'secondary');remove.onclick=protectedAction(async()=>{await api('/api/host/location',{name,remove:true});configBuilt=false;await refresh();});locGrid.append(b,remove);}locations.append(locGrid);root.append(locations);const fresh=el('button','New gathering','secondary');fresh.onclick=protectedAction(async()=>{if(!confirm('Archive waiting requests, reset protected first turns, and start new Tonight stats? Playback continues; request handoff stops.'))return;await api('/api/host/gathering',{});submitted.clear();await refresh();notify('New gathering started. Start session when ready.');});const gathering=el('section',undefined,'host-card host-gathering');gathering.append(el('h3','New gathering'),el('p','Start a new event: archive waiting requests, reset protected turns and Tonight stats. Music continues, but automatic handoff stops. To resume music, use Start session in Playback.','muted'),fresh);root.append(gathering);const history=el('details');history.id='host-history-panel';history.append(el('summary','Playback history & reset'));history.append(el('p','Only observed UnicornTunes requests count. Resetting clears play history and likes after saving a private database backup; requests, votes, favorites and settings stay intact.','muted'));if(state.history_cleanup?.removed_plays)history.append(el('p','Last reset removed '+state.history_cleanup.removed_plays+' playback records. Backup: '+state.history_cleanup.backup,'muted'));const historyReset=el('button','Back up and reset play history','secondary');historyReset.onclick=protectedAction(async()=>{if(!confirm('Back up the database, then clear played history and likes? Requests, votes, profiles, favorites, playlists and settings will stay intact.'))return;const result=await api('/api/host/history-reset',{});configBuilt=false;await refresh();notify('Play history reset.'+(result.backup?' Backup saved: '+result.backup:''));});history.append(historyReset);root.append(history);if(typeof mountHostSections==='function')mountHostSections();}
 $('open-stats').onclick=protectedAction(async()=>{$('stats-dialog').showModal();await loadStats();});$('close-stats').onclick=()=>$('stats-dialog').close();$('stats-period').onchange=protectedAction(loadStats);$('stats-view').onchange=protectedAction(loadStats);

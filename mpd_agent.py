@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import socket
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -102,6 +103,14 @@ OUTPUT_ACTIONS = ('output_volume_status', 'output_volume_set')
 
 def execute(mpd,request):
     action=request.get('action')
+    if action == 'power_off':
+        # sudoers must allow this exact command, without a password.
+        result = subprocess.run(['/usr/bin/sudo', '-n', '/usr/bin/systemd-run', '--on-active=5s',
+                                 '--unit=unicorntunes-poweroff', '/usr/bin/systemctl', 'poweroff', '--no-wall'],
+                                capture_output=True, timeout=5)
+        if result.returncode:
+            raise ValueError('Graceful shutdown is not enabled. Follow the Pine64 setup instructions.')
+        return {'shutdown_accepted':True}
     if action == 'boot_status':
         boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         uptime = float(Path('/proc/uptime').read_text().split()[0])
@@ -143,7 +152,7 @@ def execute(mpd,request):
         import local_loudness as loudness
         matched=loudness.playback_record(uri,status.get('songid'))
         if matched and str(matched.get('volume'))!=str(status.get('volume')):matched=None
-        return {'agent_version':9,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
+        return {'agent_version':10,'state':status.get('state','stop'),'uri':uri,'song_id':status.get('songid'),
                 'progress_ms':round(float(status.get('elapsed',0))*1000),
                 'duration_ms':round(float(status.get('duration',0))*1000),'volume':status.get('volume'),
                 'error':status.get('error',''),'normalized':bool(matched),'legacy_copy':bool(normalized),'volume_plan':matched,'updating':bool(status.get('updating_db'))}
@@ -201,7 +210,7 @@ def main():
         if len(raw)>8192:raise ValueError('Request too large')
         request=json.loads(raw)
         if not isinstance(request,dict):raise ValueError('JSON object required')
-        if request.get('action') == 'boot_status' or request.get('action') in OUTPUT_ACTIONS or request.get('action') in MAINTENANCE_ACTIONS[:-1]:
+        if request.get('action') in ('boot_status', 'power_off') or request.get('action') in OUTPUT_ACTIONS or request.get('action') in MAINTENANCE_ACTIONS[:-1]:
             result = execute(None,request)
         else:
             with MPD() as mpd:

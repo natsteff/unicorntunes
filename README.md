@@ -284,3 +284,9 @@ PulseAudio output volume and managed Soloist updates require restricted agent 8 
 Run `dcupd` for the improved background startup check, single per-player guest welcome and Room stats defaults. Background startup can show **Starting** while waiting for Spotify. The first request takes priority once startup is confirmed. Detailed confirmation errors remain in the signed-in Host Desk.
 
 For amp-triggered startup, update the linked Pine64 to agent 9 using the versioned [agent helper](https://github.com/natsteff/unicorntunes/blob/v0.8.4/deploy/update-local-agent.sh). **Player settings → Start session on power-on** defaults to On. After a fresh boot the Docker server reads the Linux boot identity through the existing restricted SSH link, waits for the matching Soloist player and starts at most once for that boot. It leaves an existing session on another player in control and respects a host Pause or Stop after that boot. Install the agent and then power-cycle the player at the next normal use to test.
+
+## Upgrade notes for v0.8.5
+
+Run `dcupd` for Host Desk autosave, the editing-player label, and the startup and final-request skip fixes. Settings save as you change them. The buttons that start or stop playback, apply live volume, share playlists, or perform maintenance are explicit actions.
+
+**End Session** stops handoff, archives pending requests, and resets the gathering after the linked Pine64 accepts a graceful shutdown. For this action, update the UnicornTunes playback helper on the Pine64 and enable the exact shutdown command. Wait until the board shuts down before switching off the amp. [Pine64 shutdown setup](SOLOIST_DEVICE_SETUP.md#enable-graceful-shutdown)

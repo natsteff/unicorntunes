@@ -1,10 +1,85 @@
 /* Host-only navigation. Existing controls and handlers are retained when regrouped. */
+function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=650, controls, renderDraft, saved, rollback=false}){
+    const drafts=new Map();
+    const pending=new Map();
+    let timer, saving=false;
+    function display(entry){
+        if(entry&&scope()===entry.key)status.textContent=entry.status;
+    }
+    async function flush(){
+        clearTimeout(timer);
+        if(saving||!pending.size)return;
+        const entry=pending.values().next().value;
+        pending.delete(entry.key);
+        if(!form.isConnected||!state.host)return;
+        saving=true;
+        entry.status='Saving…';
+        display(entry);
+        try{
+            const result=await apply(entry.value);
+            if(drafts.get(entry.key)===entry){
+                await refresh();
+                if(drafts.get(entry.key)===entry){
+                    drafts.delete(entry.key);
+                    entry.status='Saved.';
+                    if(scope()===entry.key)saved?.(result, entry.value);
+                    display(entry);
+                }
+            }
+        }catch(error){
+            entry.status=error.message;
+            if(rollback&&drafts.get(entry.key)===entry){
+                drafts.delete(entry.key);
+                if(scope()===entry.key)renderDraft?.(null);
+            }
+            display(entry);
+            if(scope()!==entry.key)notify('A setting for the previous selection could not be saved.');
+        }finally{
+            saving=false;
+            if(pending.size)flush();
+        }
+    }
+    function queue(event, value){
+        const key=scope();
+        const entry={key,value:value??read(),status:'Waiting to save…'};
+        drafts.set(key,entry);
+        if(entry.value===null||(value===undefined&&!form.checkValidity())){
+            pending.delete(key);
+            entry.status='Check the highlighted fields before saving.';
+            display(entry);
+            return;
+        }
+        pending.set(key,entry);
+        display(entry);
+        clearTimeout(timer);
+        if(event?.type==='change'&&event.target.matches('select,input[type=checkbox]')||!delay)flush();
+        else timer=setTimeout(flush,delay);
+    }
+    for(const control of controls||[form]){
+        const edit=event=>{
+            if(event.type==='input'&&event.target.matches('select,input[type=checkbox]'))return;
+            if(event.type==='change'&&!event.target.matches('select,input[type=checkbox]'))return;
+            queue(event);
+        };
+        control.addEventListener('input',edit);
+        control.addEventListener('change',edit);
+    }
+    form.addEventListener('submit',event=>{event.preventDefault();flush();});
+    form.addEventListener('focusout',event=>{if(!form.contains(event.relatedTarget))flush();});
+    return {draft:()=>drafts.get(scope())?.value, sync(){
+        const draft=drafts.get(scope());
+        if(draft)display(draft);
+        else if(status.dataset.scope!==scope())status.textContent='';
+        status.dataset.scope=scope();
+    }, submit:value=>{queue(null,value);flush();}, flush};
+}
 (function () {
     'use strict';
     if (location.pathname !== '/host') return;
     document.body.classList.add('host-mode');
     const $ = id => document.getElementById(id);
     const controls = $('controls');
+    const selectedDevice=()=>$('devices').value||'';
     const saved = {};
     for (const id of ['room-host-tools','local-player-panel','host-playlist-tools','connection','devices','accepting','save','stop','refreshdevices','pause','skip','logout']) saved[id] = $(id);
     const spotifyLink = controls.querySelector('a[href="/api/host/spotify-login"]').parentElement;
@@ -39,13 +114,14 @@
         <div class="host-playback-grid">
           <div class="host-card"><h4>Player &amp; session</h4><label for="devices">Use this playback device</label><div class="host-device-row"><div id="host-devices-slot"></div><div id="host-refresh-slot"></div></div>
             <p id="host-playback-account" class="muted"></p><label class="host-checkbox" for="accepting"><span id="host-accepting-slot"></span>Accept guest requests</label>
-            <p class="muted">Device and request-setting changes apply when you start, move or restart the session.</p>
+            <p class="muted">Choose Start or Move to apply a player selection. Guest request preferences save immediately.</p>
             <p id="host-pending" role="status" hidden></p><div id="host-start-slot"></div><p id="host-start-help" class="muted"></p>
           </div>
           <div class="host-card"><h4>During playback</h4>
             <div class="host-action-row"><div id="host-pause-slot"></div><p id="host-pause-help">Pause audio and stop automatic request handoff.</p></div>
             <div class="host-action-row"><div id="host-skip-slot"></div><p>Play the next request; if none is waiting, advance Spotify.</p></div>
             <div class="host-action-row"><div id="host-stop-slot"></div><p>Stop automatic handoff. Music already playing continues.</p></div>
+            <div class="host-action-row"><button id="host-end-session" type="button" class="secondary">End Session</button><p>Archive queued requests, reset the gathering, and shut down the linked Pine64.</p></div><p id="host-end-status" role="status"></p>
           </div>
         </div>
         <p id="host-background-status" role="status"></p><p id="host-soloist-expiry" role="status"></p>
@@ -60,26 +136,29 @@
       </section>
       <section id="host-panel-room" class="host-panel" role="tabpanel" aria-labelledby="host-tab-room" tabindex="0" hidden>
         <div class="host-panel-heading"><h3>Gathering</h3><p>Configure queue rules, themes and this gathering’s background music.</p></div><div class="host-card"><h4>Background music for this gathering</h4><p>Overrides the selected player’s default until you restore it or start a new gathering.</p>
-        <p id="host-gathering-background-name"></p><button type="button" class="secondary" data-background-pick="gathering">Browse Spotify playlists</button><form class="host-settings-form" id="host-gathering-background"><label for="host-override-uri">Spotify link or URI</label><input id="host-override-uri" type="text" maxlength="200"><button type="submit" class="secondary">Save gathering override</button> <button id="host-restore-background" type="button" class="secondary">Restore player default</button></form><p id="host-gathering-background-status" role="status"></p></div>
+        <p id="host-gathering-background-name"></p><button type="button" class="secondary" data-background-pick="gathering">Browse Spotify playlists</button><form class="host-settings-form" id="host-gathering-background"><label for="host-override-uri">Spotify link or URI</label><input id="host-override-uri" type="text" maxlength="200"><button id="host-restore-background" type="button" class="secondary">Restore player default</button></form><p id="host-gathering-background-status" role="status"></p></div>
         <div id="host-room-slot"></div>
       </section>
       <section id="host-panel-player" class="host-panel" role="tabpanel" aria-labelledby="host-tab-player" tabindex="0" hidden>
-        <div class="host-panel-heading"><h3>Player settings</h3><p>Choose the player you want to configure in Playback.</p></div>
+        <div class="host-panel-heading"><h3>Player settings</h3><p><strong id="host-editing-player">No player selected</strong></p><p>Choose the player you want to configure in Playback.</p></div>
         <div class="host-card"><h4>Default background music</h4><p id="host-default-player"></p>
-        <p id="host-default-name"></p><button type="button" class="secondary" data-background-pick="player">Browse Spotify playlists</button><form class="host-settings-form" id="host-background-form"><label for="host-background-uri">Spotify playlist, album or artist link or URI</label><input id="host-background-uri" type="text" maxlength="200"><button type="submit" class="secondary">Save player default</button></form><p id="host-default-status" role="status"></p></div>
+        <p id="host-default-name"></p><button type="button" class="secondary" data-background-pick="player">Browse Spotify playlists</button><form class="host-settings-form" id="host-background-form"><label for="host-background-uri">Spotify playlist, album or artist link or URI</label><input id="host-background-uri" type="text" maxlength="200"></form><p id="host-default-status" role="status"></p></div>
         <div class="host-card"><h4>Guest welcome</h4><form id="host-player-welcome-form" class="host-settings-form">
           <label for="host-player-welcome">Welcome for this player</label><input type="text" id="host-player-welcome" maxlength="300">
           <p class="muted">Leave blank to hide the guest heading.</p><p id="host-player-welcome-current" class="muted"></p>
           <label for="host-player-accent">Text to highlight in red</label><input type="text" id="host-player-accent" maxlength="300">
           <p id="host-player-welcome-preview" class="headline-preview" aria-label="Welcome preview"></p>
-          <div class="buttons"><button type="submit" class="secondary">Save welcome</button><button type="button" class="secondary" id="host-player-welcome-restore">Restore default</button></div>
+          <div class="buttons"><button type="button" class="secondary" id="host-player-welcome-restore">Restore default</button></div>
         </form><p id="host-player-welcome-status" role="status"></p></div>
         <div class="host-card"><h4>Power-on behavior</h4>
           <form id="host-player-power-form" class="host-settings-form">
             <label><input type="checkbox" id="host-player-power"> Start session on power-on</label>
             <p class="muted">When its amp boots the linked Pine64, the player can start its own session once Soloist is available.</p>
-            <button type="submit" class="secondary">Save power-on setting</button>
-          </form><p id="host-player-power-status" role="status"></p>
+
+          </form><p id="host-player-power-save-status" role="status"></p><p id="host-player-power-status" role="status"></p>
+          <button id="host-helper-check" type="button" class="secondary">Check playback helper</button>
+          <a href="https://github.com/natsteff/unicorntunes/blob/v0.8.5/README.md#upgrade-notes-for-v085">Playback helper update instructions</a>
+          <p id="host-helper-status" role="status"></p>
         </div>
         <section id="host-audio-levels" class="host-card" tabindex="-1" aria-labelledby="host-volume-title">
           <h4 id="host-volume-title">Volume controls</h4>
@@ -108,7 +187,7 @@
         <div id="host-app-settings-slot"></div>
         <div class="host-card"><h4>House background playlist</h4><p>Used when the gathering and player have no background selection.</p>
         <p id="host-house-name"></p><button type="button" class="secondary" data-background-pick="house">Browse Spotify playlists</button>
-        <form class="host-settings-form" id="host-house-form"><label for="host-house-uri">Spotify link or URI</label><input id="host-house-uri" type="text" maxlength="200"><button type="submit" class="secondary">Save house playlist</button></form><p id="host-house-status" role="status"></p></div>
+        <form class="host-settings-form" id="host-house-form"><label for="host-house-uri">Spotify link or URI</label><input id="host-house-uri" type="text" maxlength="200"></form><p id="host-house-status" role="status"></p></div>
       </section>
       <section id="host-panel-setup" class="host-panel" role="tabpanel" aria-labelledby="host-tab-setup" tabindex="0" hidden>
         <div class="host-panel-heading"><h3>Setup &amp; troubleshooting</h3><p>Check Spotify authorization and diagnose playback connections.</p></div>
@@ -116,7 +195,7 @@
           <p>Check and stage the official ARM64 build on the linked Pine64. Applying an update restarts Soloist.</p>
           <div class="buttons"><button type="button" class="secondary" data-soloist-action="status">Read update status</button><button type="button" class="secondary" data-soloist-action="check">Check for update</button><button type="button" class="secondary" data-soloist-action="stage">Download and stage</button><button type="button" class="secondary" data-soloist-action="apply">Apply and restart</button></div>
           <p id="host-soloist-update-status" role="status"></p>
-          <form id="host-soloist-schedule" class="host-settings-form"><label><input type="checkbox" id="host-soloist-scheduled"> Apply staged updates when idle</label><label for="host-soloist-hour">Maintenance hour (0–23, UnicornTunes timezone)</label><input type="number" id="host-soloist-hour" min="0" max="23" value="3" required><button type="submit" class="secondary">Save maintenance window</button></form>
+          <form id="host-soloist-schedule" class="host-settings-form"><label><input type="checkbox" id="host-soloist-scheduled"> Apply staged updates when idle</label><label for="host-soloist-hour">Maintenance hour (0–23, UnicornTunes timezone)</label><input type="number" id="host-soloist-hour" min="0" max="23" value="3" required></form>
         </div>
         <div class="host-card" id="host-spotify-slot"><h4>Spotify authorization</h4><p class="muted">Use the same Spotify account as the playback device. Reconnect only when changing accounts, granting permissions or fixing authorization.</p></div>
         <div class="host-card"><h4>Connected Spotify account</h4><p id="host-account-details" role="status">Checking authorization…</p><p class="muted">This is UnicornTunes' authorized Spotify account. It does not independently verify Soloist pairing. Account checks are cached for up to five minutes.</p><button id="host-account-refresh" type="button" class="secondary">Check account</button></div><div class="host-card"><h4>Playback diagnostics</h4><p>Download recent actions, transitions and failures for troubleshooting. Credentials, account names and raw Spotify responses are omitted. Track/player identifiers are hashed. Reports cover recent activity since this container started.</p><button id="host-diagnostics-download" type="button" class="secondary">Download diagnostic report</button><p id="host-diagnostics-status" role="status"></p></div><div class="host-card" id="host-recovery-slot"></div><button type="button" class="secondary" data-host-go="player">Open player settings</button>
@@ -191,11 +270,9 @@
         renderVolumeControls(current);
         $('host-soloist-expiry').textContent=current.soloist_expiry_warning?
             'Soloist expiry is approaching. Check Soloist updates in Setup & troubleshooting. '+(current.soloist_schedule_warning||''):'';
-        const schedule=$('host-soloist-schedule');
-        if(!schedule.dataset.dirty){
-            $('host-soloist-hour').value=current.soloist_update_schedule?.hour??3;
-            $('host-soloist-scheduled').checked=!!current.soloist_update_schedule?.enabled;
-        }
+        const scheduleDraft=scheduleAutosave.draft();
+        $('host-soloist-hour').value=scheduleDraft?.hour??current.soloist_update_schedule?.hour??3;
+        $('host-soloist-scheduled').checked=scheduleDraft?.enabled??!!current.soloist_update_schedule?.enabled;
         const health=current.handoff||{}, running=!!current.enabled;
         $('host-state').textContent=health.status|| (running?'Running':'Stopped');
         const warning=health.status==='Needs attention'||!!current.error||!!health.stale;
@@ -217,18 +294,19 @@
         $('host-start-reminder').textContent=running?'Session running.':($('devices').value?'Check speakers and select Start session when ready.':'Power on the player and refresh the list.');
         const background=current.background_music||{};
         const selected=$('devices').value||current.device;
-        const backgroundInput=$('host-background-uri');
-        if(backgroundInput.dataset.device!==selected){
-            delete backgroundInput.dataset.dirty;
-            backgroundInput.dataset.device=selected||'';
-        }
-        if(!backgroundInput.dataset.dirty)backgroundInput.value=background.defaults?.[selected]?.uri||'';
+        const name=$('devices').selectedOptions[0]?.dataset.name;
+        $('local-bind').hidden=!!selected&&current.local_player?.device===selected;
+        $('host-editing-player').textContent=name?'Editing: '+name:'No player selected';
+        $('host-end-session').disabled=!current.device||!current.local_player?.enabled||current.local_player.device!==current.device||
+            selected!==current.device||$('host-end-session').dataset.busy==='true';
         renderPlayerCopy(current, selected);
-        const override=$('host-override-uri'), house=$('host-house-uri');
         const currentOverride=background.override||{};
         const currentHouse=background.house||{};
-        if(!override.dataset.dirty)override.value=currentOverride.uri||'';
-        if(!house.dataset.dirty)house.value=currentHouse.uri||'';
+        for(const [key,config] of Object.entries({player:background.defaults?.[selected],gathering:currentOverride,house:currentHouse})){
+            const editor=backgroundEditors[key];
+            editor.input.value=editor.autosave.draft()?.uri??config?.uri??'';
+            editor.autosave.sync();
+        }
         const playerDefault=background.defaults?.[selected]||{};
         $('host-default-name').textContent=playerDefault.name||'';
         $('host-gathering-background-name').textContent=currentOverride.name||'';
@@ -245,85 +323,91 @@
         $('save').hidden=running&&!dirty&&!moving;
         $('host-pending').hidden=!dirty;
         $('host-pending').textContent='Changes not yet applied. '+(running?'Moving or restarting can affect playback.':'Start the session to apply them.');
-        $('host-start-help').textContent=running?(moving?'Move playback and future requests to the selected player.':'Session running. Change the player or request setting above to move or apply changes.'):'Activate the selected player and enable automatic requests. Shuffle and repeat are turned off.';
+        $('host-start-help').textContent=running?(moving?'Move playback and future requests to the selected player.':'Session running. Choose another player above to move the session.'):'Activate the selected player and enable automatic requests. Shuffle and repeat are turned off.';
     };
     let accountTimer, accountLoading=false, accountLoaded=false;
     function showAccount(value){const label=value.status==='verified'?value.display_name:value.status==='not_connected'?'Not connected':'Unable to verify';$('host-account-summary').textContent='Spotify account: '+label;$('host-playback-account').textContent=value.status==='verified'?value.display_name:'';$('host-account-details').textContent=label+(value.verified_at?' · Verified '+new Date(value.verified_at*1000).toLocaleString():'');}
     async function checkAccount(){if(accountLoading)return;accountLoading=true;accountLoaded=true;clearTimeout(accountTimer);$('host-account-refresh').disabled=true;try{const value=await api('/api/host/account',{});if(window.hostDeskState?.host)showAccount(value);}catch(error){showAccount({status:'unavailable'});}finally{accountLoading=false;$('host-account-refresh').disabled=false;if(window.hostDeskState?.host)accountTimer=setTimeout(checkAccount,300000);}}
     $('host-account-refresh').onclick=checkAccount;
     $('host-diagnostics-download').onclick=async()=>{const b=$('host-diagnostics-download');b.disabled=true;try{const report=await api('/api/host/diagnostics',{});const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='unicorntunes-diagnostics.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('host-diagnostics-status').textContent='Report downloaded. It contains recent diagnostic events; review before sharing.';}catch(error){$('host-diagnostics-status').textContent='Unable to download diagnostics. Sign in and try again.';}finally{b.disabled=false;}};
-    async function saveBackground(input, scope, status, clear=false){
-        const statusElement=$(status);
-        try{
-            await api('/api/host/background',{uri:clear?'':input.value,device:$('devices').value,scope});
-            delete input.dataset.dirty;
-            await refresh();
-            statusElement.textContent=clear?'Player default restored.':'Saved.';
-        }catch(error){statusElement.textContent=error.message;}
-    }
-    for(const [form,id,scope,status] of [
+    const backgroundEditors={};
+    for(const [form,id,kind,status] of [
         ['host-background-form','host-background-uri','player','host-default-status'],
         ['host-gathering-background','host-override-uri','gathering','host-gathering-background-status'],
         ['host-house-form','host-house-uri','house','host-house-status']
     ]){
         const input=$(id);
-        input.addEventListener('input',()=>{input.dataset.dirty='true';});
-        $(form).onsubmit=async event=>{
-            event.preventDefault();
-            const submit=event.submitter;
-            if(submit)submit.disabled=true;
-            try{await saveBackground(input,scope,status);}finally{if(submit)submit.disabled=false;}
-        };
+        const read=()=>({uri:input.value,device:selectedDevice(),scope:kind,
+                         ...(kind==='gathering'?{gathering:state.gathering}:{})});
+        const autosave=bindSettingsAutosave($(form),{status:$(status),read,
+            scope:()=>kind==='player'?selectedDevice():kind==='gathering'?String(state.gathering):kind,
+            apply:value=>api('/api/host/background',value)});
+        backgroundEditors[kind]={input,read,autosave};
     }
     const welcome=$('host-player-welcome'), welcomeAccent=$('host-player-accent');
     const power=$('host-player-power');
+    const welcomeStatus=$('host-player-welcome-status'), powerStatus=$('host-player-power-save-status');
+    const welcomeAutosave=bindSettingsAutosave($('host-player-welcome-form'),{
+        status:welcomeStatus,scope:selectedDevice,
+        read:()=>({device:selectedDevice(),welcome:welcome.value,accent:welcomeAccent.value}),
+        apply:value=>api('/api/host/player-welcome',value)
+    });
+    const powerAutosave=bindSettingsAutosave($('host-player-power-form'),{
+        status:powerStatus,scope:selectedDevice,delay:0,rollback:true,
+        read:()=>({device:selectedDevice(),enabled:power.checked}),
+        apply:value=>api('/api/host/player-auto-start',value),
+        renderDraft:()=>{power.checked=state.player_auto_start?.[selectedDevice()]!==false;}
+    });
     function renderPlayerCopy(current, selected){
         const name=$('devices').selectedOptions[0]?.dataset.name;
-        if(welcome.dataset.device!==selected){
-            delete welcome.dataset.dirty;
-            delete welcomeAccent.dataset.dirty;
-            delete power.dataset.dirty;
-            welcome.dataset.device=selected||'';
-        }
         const value=current.player_welcomes?.[selected];
         const inherited=name?'Welcome to '+name:'';
-        if(!welcome.dataset.dirty)welcome.value=value??'';
-        if(!welcomeAccent.dataset.dirty)welcomeAccent.value=current.player_accents?.[selected]||'';
-        if(!power.dataset.dirty)power.checked=current.player_auto_start?.[selected]!==false;
+        const draft=welcomeAutosave.draft();
+        welcome.value=draft?.welcome??value??'';
+        welcomeAccent.value=draft?.accent??current.player_accents?.[selected]??'';
+        power.checked=powerAutosave.draft()?.enabled??(current.player_auto_start?.[selected]!==false);
         $('host-player-welcome-current').textContent='Default: '+(inherited||'Unavailable')+' · Current: '+(value===undefined?inherited||'Unavailable':value||'Hidden');
         $('host-player-power-status').textContent=current.boot_start_status?.[selected]?.message||'';
+        welcomeAutosave.sync();powerAutosave.sync();
         updatePlayerPreview();
     }
     function updatePlayerPreview(){
         if(typeof renderHeadline==='function')renderHeadline($('host-player-welcome-preview'),welcome.value,welcomeAccent.value);
     }
-    for(const field of [welcome,welcomeAccent])field.oninput=()=>{field.dataset.dirty='true';updatePlayerPreview();};
-    async function saveWelcome(restore){
-        const status=$('host-player-welcome-status');
+    for(const field of [welcome,welcomeAccent])field.addEventListener('input',updatePlayerPreview);
+    $('host-player-welcome-restore').onclick=()=>welcomeAutosave.submit({device:selectedDevice(),restore:true});
+    $('host-helper-check').onclick=async event=>{
+        const button=event.currentTarget, device=selectedDevice();
+        const status=$('host-helper-status');
+        button.disabled=true;
+        status.textContent='Checking the playback helper…';
         try{
-            await api('/api/host/player-welcome',{device:$('devices').value,welcome:welcome.value,restore,accent:welcomeAccent.value});
-            delete welcome.dataset.dirty;
-            delete welcomeAccent.dataset.dirty;
+            const result=await api('/api/host/playback-helper',{device});
+            if(device===selectedDevice())status.textContent=(result.ready?'Power-on start is ready.':'Playback helper update needed.')+
+                ' '+(result.shutdown_supported?'End Session is supported.':'End Session needs the current helper.')+
+                (result.version?' Installed helper version: '+result.version+'.':'');
             await refresh();
-            status.textContent=restore?'Default restored.':'Saved.';
+        }catch(error){if(device===selectedDevice())status.textContent=error.message;}
+        finally{button.disabled=false;}
+    };
+    $('host-end-session').onclick=async event=>{
+        const button=event.currentTarget, device=selectedDevice();
+        const name=$('devices').selectedOptions[0]?.dataset.name;
+        if(!confirm('End the session on '+name+', archive queued requests, and shut down its Pine64?'))return;
+        const status=$('host-end-status');
+        button.dataset.busy='true';
+        button.disabled=true;
+        try{
+            await api('/api/host/end-session',{device,confirm:true});
+            submitted.clear();
+            status.textContent='Shutdown accepted. Wait for the Pine64 to shut down before switching off the amp.';
         }catch(error){status.textContent=error.message;}
-    }
-    $('host-player-welcome-form').onsubmit=event=>{event.preventDefault();saveWelcome(false);};
-    $('host-player-welcome-restore').onclick=()=>saveWelcome(true);
-    power.onchange=()=>{power.dataset.dirty='true';};
-    $('host-player-power-form').onsubmit=async event=>{
-        event.preventDefault();
-        try{
-            await api('/api/host/player-auto-start',{device:$('devices').value,enabled:power.checked});
-            delete power.dataset.dirty;
-            await refresh();
-            notify('Power-on setting saved.');
-        }catch(error){notify(error.message);}
+        finally{delete button.dataset.busy;await refresh();}
     };
     controls.querySelectorAll('[data-background-pick]').forEach(button=>{
         button.onclick=()=>openBackgroundPlaylistPicker(button.dataset.backgroundPick);
     });
-    $('host-restore-background').onclick=()=>saveBackground($('host-override-uri'),'gathering','host-gathering-background-status',true);
+    $('host-restore-background').onclick=()=>backgroundEditors.gathering.autosave.submit({...backgroundEditors.gathering.read(),uri:''});
     const soloistStatus=$('host-soloist-update-status');
     const soloistButtons=Array.from(controls.querySelectorAll('[data-soloist-action]'));
     for(const button of soloistButtons)button.onclick=async()=>{
@@ -350,17 +434,10 @@
         }catch(error){soloistStatus.textContent=error.message;}
         finally{soloistButtons.forEach(button=>{button.disabled=false;});}
     };
-    $('host-soloist-schedule').oninput=event=>{event.currentTarget.dataset.dirty='true';};
-    $('host-soloist-schedule').onsubmit=async event=>{
-        event.preventDefault();
-        const form=event.currentTarget;
-        try{
-            await api('/api/host/soloist-update',{action:'schedule',hour:$('host-soloist-hour').valueAsNumber,enabled:$('host-soloist-scheduled').checked});
-            delete form.dataset.dirty;
-            await refresh();
-            soloistStatus.textContent='Maintenance window saved.';
-        }catch(error){soloistStatus.textContent=error.message;}
-    };
+    const scheduleAutosave=bindSettingsAutosave($('host-soloist-schedule'),{
+        status:soloistStatus,read:()=>({action:'schedule',hour:$('host-soloist-hour').valueAsNumber,enabled:$('host-soloist-scheduled').checked}),
+        apply:value=>api('/api/host/soloist-update',value)
+    });
     const spotifyLevel=$('host-spotify-volume');
     const pulseLevel=$('host-output-volume');
     const spotifyStatus=$('host-spotify-volume-status');
@@ -395,7 +472,7 @@
         pulseLevel.disabled=!outputSink;
         pulseSave.disabled=!outputSink||outputBusy;
         $('local-volume-apply').disabled=!localLinked;
-        for(const id of ['local-scan','loudness-refresh','loudness-cancel','loudness-save']){
+        for(const id of ['local-scan','loudness-refresh','loudness-cancel','loudness-enabled','loudness-target','loudness-output']){
             if(changed)$(id).disabled=!localLinked;
         }
         $('host-local-volume-binding').textContent=localLinked?'':'Select the player linked to MPD to apply local levels.';
@@ -447,5 +524,4 @@
         finally{outputBusy=false;pulseSave.disabled=!outputSink;}
     };
     $('devices').addEventListener('change',()=>window.renderHostDesk(window.hostDeskState||{},true));
-    $('accepting').addEventListener('change',()=>window.renderHostDesk(window.hostDeskState||{},true));
 }());
