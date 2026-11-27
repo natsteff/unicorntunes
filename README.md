@@ -290,3 +290,9 @@ For amp-triggered startup, update the linked Pine64 to agent 9 using the version
 Run `dcupd` for Host Desk autosave, the editing-player label, and the startup and final-request skip fixes. Settings save as you change them. The buttons that start or stop playback, apply live volume, share playlists, or perform maintenance are explicit actions.
 
 **End Session** stops handoff, archives pending requests, and resets the gathering after the linked Pine64 accepts a graceful shutdown. For this action, update the UnicornTunes playback helper on the Pine64 and enable the exact shutdown command. Wait until the board shuts down before switching off the amp. [Pine64 shutdown setup](SOLOIST_DEVICE_SETUP.md#enable-graceful-shutdown)
+
+## Upgrade notes for v0.8.6
+
+Run `dcupd` for the guest greeting, search jump and quick filters, mobile Host Desk install link, and compact Host Desk Playback search and queue. Player settings now has **Use the Main headline** and **Shuffle background playlist**. Shuffle defaults on for background playlists and is turned off before dispatching guest requests. Playback reads volume levels when the session starts.
+
+After **End Session**, the Host Desk checks the linked Pine64’s reachability and reports its progress. A board becoming unreachable is not proof of a complete shutdown. Confirm the board has finished shutting down before switching off the amp. The v0.8.5 playback helper and shutdown permission remain sufficient.

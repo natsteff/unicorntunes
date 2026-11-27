@@ -263,11 +263,28 @@ class LocalPlayback:
             report('Power-on startup sent. See Playback for current session status.' if self.startup_pending
                    else 'Session started after power-on.', True)
 
+    def update_shutdown_probe(self, device, result):
+        progress = self.meta('shutdown_progress', {})
+        current = progress.get(device)
+        if not current or current.get('phase') != 'waiting':
+            return
+        elapsed = time.time() - current['accepted_at']
+        if result.get('boot_id'):
+            current['failures'] = 0
+        elif result.get('offline') and elapsed >= 5:
+            current['failures'] += 1
+            if current['failures'] >= 2:
+                current.update(phase='offline', message='Pine64 is offline after shutdown. Confirm it has finished shutting down before switching off the amp.')
+        if current['phase']=='waiting' and elapsed >= 90:
+            current.update(phase='unknown', message='Shutdown completion could not be verified. Check the Pine64 before switching off the amp.')
+        self.set_meta('shutdown_progress', progress)
+
     def check_linked_player_boot(self):
         probe = self.boot_probe
         if probe and 'result' in probe:
             self.boot_probe = None
             if probe['connection'] is self.local and probe['device'] == self.local_config.get('device'):
+                self.update_shutdown_probe(probe['device'], probe['result'])
                 if probe['result'].get('upgrade_required'):
                     self.update_boot_status(probe['device'], '', 'Playback helper update needed.')
                 else:
@@ -280,7 +297,8 @@ class LocalPlayback:
         device = self.local_config.get('device')
         if probe or due < self.boot_probe_due or not device or not self.local_config.get('enabled'):
             return
-        self.boot_probe_due = due + 15
+        shutdown = self.meta('shutdown_progress', {}).get(device, {})
+        self.boot_probe_due = due + (5 if shutdown.get('phase') == 'waiting' else 15)
         connection = self.local
         probe = {'device':device, 'connection':connection}
         self.boot_probe = probe
@@ -289,7 +307,9 @@ class LocalPlayback:
             try:
                 probe['result'] = connection.call('boot_status')
             except f.Failure as error:
-                probe['result'] = {'upgrade_required':'Unknown action' in str(error)}
+                message = str(error)
+                probe['result'] = {'upgrade_required':'Unknown action' in message,
+                                   'offline':'SSH connection failed' in message or 'connection/response failed' in message}
             except Exception:
                 probe['result'] = {}
 
@@ -323,6 +343,11 @@ class LocalPlayback:
             self.db.executemany('INSERT OR REPLACE INTO room_meta VALUES(?,?)',
                                 [(key,json.dumps(value)) for key,value in settings.items()])
         self.local_active = self.now = None
+        progress = self.meta('shutdown_progress', {})
+        progress[device] = {'accepted_at':time.time(), 'phase':'waiting', 'failures':0,
+                            'message':'Pine64 is shutting down. Wait before switching off the amp.'}
+        self.set_meta('shutdown_progress', progress)
+        self.boot_probe_due = 0
         self.reason, self.error = 'Handoff stopped by host.', ''
         self.request_playback_refresh()
         return {'shutdown_accepted':True}
@@ -534,9 +559,16 @@ class LocalPlayback:
         if source not in ('all', 'spotify', 'local') or not 0 <= offset <= 1000000 or limit not in (10, 20, 30):
             raise ValueError('Invalid search source or page.')
         device = query.get('player', [''])[0]
-        if device and (not host or source != 'local' or not self.local_config.get('enabled')
+        if device and ((not host and device != self.device) or source != 'local' or not self.local_config.get('enabled')
                        or self.local_config.get('device') != device):
             raise f.Failure('No local library is linked to this player.')
+        mode = query.get('mode', [''])[0]
+        if mode not in ('', 'track', 'artist'):
+            raise ValueError('Invalid quick search filter.')
+        if mode and query.get('q', [''])[0].strip():
+            if query.get(mode, [''])[0].strip():
+                raise ValueError('Use either the quick filter or the matching advanced field.')
+            query = dict(query, **{mode:query['q'], 'q':['']})
         blank = not any(query.get(k, [''])[0].strip() for k in ('q', 'track', 'artist', 'album', 'year'))
         if blank and source != 'local':
             raise ValueError('Enter search text, or choose Local files to browse the library.')

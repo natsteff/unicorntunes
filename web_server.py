@@ -100,6 +100,8 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         self.background_armed, self.background_message, self.quick_poll_until = False, "", 0
         self.background_pending = None
         self.startup_pending = None
+        self.background_shuffle_command = None
+        self.verified_background_context = None
         self.last_poll, self.next_poll = 0, 0
         hostfile = data / 'web-host.json'
         if not hostfile.exists():
@@ -180,6 +182,25 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             self.db.execute("UPDATE songs SET state='past',detail='Observed end; ready for next request' WHERE state='playing'")
             self.db.execute("UPDATE plays SET outcome='unknown' WHERE outcome='observing'")
             self.db.commit()
+
+    def sync_background_shuffle(self, state, enabled):
+        if (state.get('device') or {}).get('id') != self.device:
+            return not enabled
+        observed = state.get('shuffle_state')
+        sent = self.background_shuffle_command
+        enabling = not enabled and sent and sent[:2] == (self.device, True)
+        if not enabling and (observed is enabled or (not enabled and observed is None and not sent)):
+            self.background_shuffle_command = None
+            return True
+        key = (self.device, enabled)
+        if sent and sent[:2] == key:
+            if not enabled and time.monotonic()-sent[2] >= 12:
+                raise f.Failure('Spotify did not confirm shuffle was off. Request order is on hold.')
+            return False
+        self.api.call('/me/player/shuffle', 'PUT', params={'state':'true' if enabled else 'false','device_id':self.device})
+        self.background_shuffle_command = (*key, time.monotonic())
+        self.request_playback_refresh()
+        return False
 
     def start_idle_request(self, row):
         if row['uri'].startswith('local:'):
@@ -266,6 +287,21 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             if self.db.execute("SELECT id FROM songs WHERE state IN ('sending','accepted','queued','uncertain')").fetchone():
                 return
             row=next((r for r in self.queue('') if r['state']=='waiting'),None)
+            owned = self.db.execute("SELECT 1 FROM songs WHERE state='playing' AND uri=?", (item.get('uri'),)).fetchone()
+            if (row or owned) and actual == self.device and not self.sync_background_shuffle(state, False):
+                return
+            configured = self.effective_background(self.device).get('uri') or ''
+            context = (state.get('context') or {}).get('uri') or ''
+            if row or owned or (context and context != configured):
+                self.verified_background_context = None
+            verified = context == configured or (not context and self.verified_background_context == (self.device, configured))
+            if not row and not owned and state.get('is_playing') and configured.startswith('spotify:playlist:') and verified:
+                wanted = self.meta('player_background_shuffle', {}).get(self.device, True)
+                try:
+                    self.sync_background_shuffle(state, wanted)
+                except f.Failure as error:
+                    self.background_shuffle_command = (self.device, wanted, time.monotonic())
+                    self.background_message = 'Could not change background shuffle: ' + str(error)
             # Decide from this poll's verified playback, not a submission-time
             # empty-queue snapshot: stale playing rows may have just been retired.
             if row and item.get('uri') and state.get('is_playing'):
@@ -408,6 +444,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                     self.finish_session_start(device, pending['accepting'], state)
                 except OSError as error:
                     raise f.Failure('Could not save the player configuration.') from error
+                self.verified_background_context = (device, pending['uri'])
                 self.startup_pending = None
                 self.diagnostics.emit('background.start_confirmed', context_reported=bool(context))
                 return True
@@ -586,6 +623,14 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                 self.finish_last_request_skip(before)
                 return
             if chosen and not pending:
+                if before.get('shuffle_state') is True and not self.sync_background_shuffle(before, False):
+                    for _ in range(4):
+                        observed = self.api.call('/me/player')
+                        if self.sync_background_shuffle(observed, False):
+                            break
+                        time.sleep(.5)
+                    else:
+                        raise f.Failure('Spotify has not confirmed shuffle is off. Wait and try Next track again.')
                 self.check_rules(chosen)
                 self.commit_selection(chosen['id'])
                 self.capture_background(before)

@@ -160,6 +160,7 @@ class BackgroundPlayback:
         if (actual == pending['device'] and state.get('is_playing')
                 and (state.get('context') or {}).get('uri') == pending['uri']):
             self.background_pending = None
+            self.verified_background_context = (pending['device'], pending['uri'])
             if not pending.get('fallback'):
                 self.background_message = ''
             return True

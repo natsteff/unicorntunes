@@ -163,6 +163,19 @@ class LocalPlayerTests(unittest.TestCase):
         self.assertEqual(self.app.meta('gathering'), 2)
         self.assertFalse(self.app.enabled)
 
+    def test_shutdown_offline_requires_consecutive_probe_failures(self):
+        self.app.set_meta('shutdown_progress', {'speaker':{'phase':'waiting','accepted_at':0,'failures':0}})
+        with patch('local_player.time.time', return_value=8):
+            self.app.update_shutdown_probe('speaker', {'offline':True})
+            self.assertEqual(self.app.meta('shutdown_progress')['speaker']['phase'], 'waiting')
+            self.app.update_shutdown_probe('speaker', {'boot_id':'present'})
+            self.app.update_shutdown_probe('speaker', {'offline':True})
+            self.assertEqual(self.app.meta('shutdown_progress')['speaker']['phase'], 'waiting')
+            self.app.update_shutdown_probe('speaker', {'offline':True})
+            result = self.app.meta('shutdown_progress')['speaker']
+            self.assertEqual(result['phase'], 'offline')
+            self.assertIn('Confirm it has finished', result['message'])
+
     def test_power_off_uses_only_fixed_graceful_shutdown_command(self):
         with patch('mpd_agent.subprocess.run', return_value=Mock(returncode=0)) as run:
             self.assertTrue(mpd_agent.execute(None, {'action':'power_off','command':'ignored'})['shutdown_accepted'])

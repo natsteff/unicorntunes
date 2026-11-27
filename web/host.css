@@ -39,3 +39,14 @@
 
 #host .host-settings-form input[type=checkbox]{width:auto;margin:0 8px 0 0;vertical-align:middle}
 #host-editing-player{color:#fff}
+
+#host .host-volume-grid input[type=number],#host .host-settings-form input[type=text]{display:block;background:#090909;border:1px solid #666;border-radius:6px;padding:11px;color:#fff;margin:6px 0}
+#host .host-volume-grid input:disabled{opacity:1;color:#aaa;border-color:#444}
+#host .host-inline-toggle{display:flex;gap:8px;align-items:center}
+#host .host-danger{background:#a62622;color:#fff;border:1px solid #ef5550}
+#host .host-danger:hover:not(:disabled){background:#c9332d}
+#host .host-danger:focus-visible{outline:2px solid #fff;outline-offset:3px}
+#host .host-danger:disabled{background:#351c1b;color:#bf9a98;border-color:#6f3d3b}
+.host-shutdown-callout:not(:empty){padding:12px;background:#351c1b;border:1px solid #d35451;border-radius:6px;color:#ffe6e5}
+.host-guest-link{align-self:center}
+.host-playback-library{margin-top:22px}

@@ -51,7 +51,7 @@ function offerHomeScreenInstall(host=false, manual=false) {
     const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const android = /Android/i.test(navigator.userAgent);
-    if (navigator.standalone ||
+    if ((!ios&&!android) || navigator.standalone ||
         matchMedia('(display-mode: standalone), (display-mode: fullscreen), (display-mode: minimal-ui)').matches) return;
 
     if(host)$('host-install').hidden=false;
@@ -80,12 +80,54 @@ $('install-dialog').addEventListener('close', () => {
     if(location.pathname==='/'&&state.profile&&!state.profile.named)askName();
 });
 
-function askName(){if(!$('name-dialog').open){$('guest-input').value='';$('name-dialog').showModal();}return new Promise(resolve=>{nameResolve=resolve;});}
-async function saveName(value){try{await api('/api/profile',{name:value});$('name-dialog').close();if(nameResolve){nameResolve(true);nameResolve=null;}await refresh();}catch(e){notify(e.message);}}
+let editingGuestName=false;
+function realGuestName(){
+    const profile=state.profile;
+    return profile&&(profile.has_name??(profile.named&&profile.name!=='<Shy guy - name not provided>'&&profile.name!=='Kiosk User'))?profile.name:'';
+}
+function askName(){
+    if(!$('name-dialog').open){
+        const input=$('guest-input'), name=realGuestName();
+        editingGuestName=!!name;
+        input.value=name;
+        $('skip-name').textContent=editingGuestName?'Cancel':'Skip';
+        $('name-dialog').querySelector('.muted').hidden=editingGuestName;
+        $('name-dialog').showModal();
+        input.focus();input.select();
+    }
+    return new Promise(resolve=>{nameResolve=resolve;});
+}
+function cancelName(){
+    $('name-dialog').close();
+    if(nameResolve){nameResolve(false);nameResolve=null;}
+}
+async function saveName(value){
+    try{
+        await api('/api/profile',{name:value});
+        $('name-dialog').close();
+        if(nameResolve){nameResolve(true);nameResolve=null;}
+        await refresh();
+    }catch(e){notify(e.message);}
+}
 $('name-form').onsubmit=e=>{e.preventDefault();saveName($('guest-input').value);};
-$('skip-name').onclick=()=>saveName('');
-$('name-dialog').addEventListener('cancel',e=>{e.preventDefault();saveName('');});
-$('guest-name').onclick=protectedAction(async()=>{await askName();});
+$('skip-name').onclick=()=>editingGuestName?cancelName():saveName('');
+$('name-dialog').addEventListener('cancel',e=>{e.preventDefault();editingGuestName?cancelName():saveName('');});
+$('name-dialog').addEventListener('close',()=>{if(nameResolve){nameResolve(false);nameResolve=null;}});
+$('guest-name').onclick=()=>askName();
+$('edit-guest-name').onclick=()=>askName();
+function renderGuestGreeting(){
+    const guest=location.pathname==='/';
+    const name=realGuestName();
+    $('guest-greeting').hidden=!guest;
+    $('guest-name').hidden=guest;
+    $('guest-search-jump').hidden=!guest;
+    $('guest-greeting-name').textContent=name?'Hi, '+name+' ·':'';
+    $('edit-guest-name').textContent=name?'Edit name':'Add your name';
+    if(guest){
+        $('copy-headline').closest('.intro').hidden=false;
+        document.body.classList.add('guest-page');
+    }
+}
 async function prepareRequest(){if(displayMode)return window.kioskSession.isReady();if(!state.profile?.named)return askName();return true;}
 function setFavoriteButtons(uri,saved){for(const b of document.querySelectorAll('[data-favorite-uri]')){if(b.dataset.favoriteUri===uri){b.disabled=saved;b.textContent=saved?'✓ Already in House Favorites':'Add to House Favorites';}}}
 function favoriteButton(song){const b=el('button',song.house_favorite?'✓ Already in House Favorites':'Add to House Favorites','secondary favorite-action');b.dataset.favoriteUri=song.uri;b.disabled=Boolean(song.house_favorite);b.onclick=protectedAction(async()=>{b.disabled=true;try{await api('/api/host/favorite',{uri:song.uri});setFavoriteButtons(song.uri,true);notify('Added to House Favorites.');}catch(e){setFavoriteButtons(song.uri,false);throw e;}});return b;}
@@ -126,7 +168,7 @@ function renderCopy(){
     }
     $('copy-headline').closest('.intro').hidden=['headline','description'].every(key=>!text[key]?.trim());
 }
-function renderRoom(){if(!state.room)return;if(displayMode)$('kiosk-current').textContent='Current guest: '+state.profile.name;$('queue-policy').textContent=state.room.fair_queue?'Your first request each gathering gets a protected turn. Every third pick goes to the oldest waiting request. The next request is locked.':'Votes order waiting requests. The next selected request and songs handed to Spotify stay locked.';for(const song of state.queue){if(song.mine&&song.protected&&!announcedRequests.has(song.id)&&!displayMode){announcedRequests.add(song.id);notify(song.name+' is the next protected request. Spotify tracks may still play ahead of it.');}}renderCopy();$('version').textContent='v'+state.version;$('guest-name').textContent=displayMode?(state.profile.named?'Change your name':'Add your name (optional)'):(state.profile.named?state.profile.name:'Set your name');if(!displayMode&&location.pathname!='/host'&&!state.profile.named&&!$('install-dialog').open&&!$('name-dialog').open)askName();$('theme-banner').hidden=!state.room.theme;$('theme-name').textContent=state.room.theme;$('theme-searches').replaceChildren();for(const text of state.room.theme_searches){const b=el('button',text,'secondary');b.onclick=()=>{$('query').value=text;for(const id of ['search-title','search-artist','search-album','search-year'])$(id).value='';$('search-exact').checked=false;$('search').requestSubmit();};$('theme-searches').append(b);}const health=state.handoff;const parts=[health.status,state.accepting?'Requests open':'Requests paused'];if(health.idle)parts.push('Player idle · ready for the next request');else if(!health.player_active)parts.push('No active Spotify player');if(state.host&&health.recovery)parts.push(health.recovery);if(health.stale)parts.push('Playback status is stale');if(health.status==='Needs attention')parts.push(state.host&&location.pathname==='/host'?health.reason:'Requests are waiting for the host to resume playback.');if(state.now&&!state.now.playing&&!health.idle)parts.push('Playback paused');$('playback-health').textContent=parts.join(' · ');$('playback-health').classList.toggle('health-alert',health.stale||health.status==='Needs attention');const upcoming=state.spotify_upcoming;$('spotify-age').textContent=upcoming.error?('Spotify queue unavailable: '+upcoming.error):(upcoming.updated?'Updated '+new Date(upcoming.updated*1000).toLocaleTimeString()+' · refreshes about every 30 seconds':'Waiting for Spotify queue snapshot.');if(upcoming.warning)$('spotify-age').textContent+=' · '+upcoming.warning;$('spotify-tracks').replaceChildren();for(const song of upcoming.items){const r=el('div',undefined,'song');r.append(cover(song),info(song));$('spotify-tracks').append(r);}if(upcoming.updated&&!upcoming.items.length&&!upcoming.error)$('spotify-tracks').append(el('p','Spotify reports no upcoming tracks.','muted'));if(state.now?.requested_by)$('now').append(el('p','Requested by '+state.now.requested_by));if(state.now?.playing&&state.background)$('now').append(el('p','Background music · make a request to join the mix.'));else if(health.idle&&state.now)$('now').append(el('p','Playback finished. The next request will start the music.'));if(state.play_id&&state.now?.playing){const reactions=el('div',undefined,'reactions');const count=state.reactions.reduce((sum,x)=>sum+x.count,0);const playId=state.play_id;const b=el('button',(state.liked?'♥ Liked':'♥ Like this song')+' · '+count,state.liked?'voted':'secondary');b.setAttribute('aria-pressed',String(!!state.liked));b.disabled=!!state.liked;b.onclick=protectedAction(async()=>{await api('/api/react',{reaction:'like',play:playId});await refresh();});reactions.append(b,el('small','Likes appreciate this song; queue upvotes choose what plays next.','muted'));$('now').append(reactions);}if(state.host&&location.pathname==='/host'&&!configBuilt){buildHostConfig();configBuilt=true;}if(!state.host){configBuilt=false;$('room-host-tools').replaceChildren();}if(displayMode&&!displayQR){displayQR=true;api('/api/share').then(share=>{const box=el('div');box.id='display-qr';$('now').parentElement.append(box,el('p','Scan to request from your phone.','muted'));new QRCode(box,{text:share.url,width:120,height:120,correctLevel:QRCode.CorrectLevel.M});}).catch(()=>{displayQR=false;});}}
+function renderRoom(){if(!state.room)return;if(displayMode)$('kiosk-current').textContent='Current guest: '+state.profile.name;$('queue-policy').textContent=state.room.fair_queue?'Your first request each gathering gets a protected turn. Every third pick goes to the oldest waiting request. The next request is locked.':'Votes order waiting requests. The next selected request and songs handed to Spotify stay locked.';for(const song of state.queue){if(song.mine&&song.protected&&!announcedRequests.has(song.id)&&!displayMode){announcedRequests.add(song.id);notify(song.name+' is the next protected request. Spotify tracks may still play ahead of it.');}}renderCopy();renderGuestGreeting();$('version').textContent='v'+state.version;$('guest-name').textContent=displayMode?(state.profile.named?'Change your name':'Add your name (optional)'):(state.profile.named?state.profile.name:'Set your name');if(!displayMode&&location.pathname!='/host'&&!state.profile.named&&!$('install-dialog').open&&!$('name-dialog').open)askName();$('theme-banner').hidden=!state.room.theme;$('theme-name').textContent=state.room.theme;$('theme-searches').replaceChildren();for(const text of state.room.theme_searches){const b=el('button',text,'secondary');b.onclick=()=>{$('query').value=text;for(const id of ['search-title','search-artist','search-album','search-year'])$(id).value='';$('search-exact').checked=false;$('search').requestSubmit();};$('theme-searches').append(b);}const health=state.handoff;const parts=[health.status,state.accepting?'Requests open':'Requests paused'];if(health.idle)parts.push('Player idle · ready for the next request');else if(!health.player_active)parts.push('No active Spotify player');if(state.host&&health.recovery)parts.push(health.recovery);if(health.stale)parts.push('Playback status is stale');if(health.status==='Needs attention')parts.push(state.host&&location.pathname==='/host'?health.reason:'Requests are waiting for the host to resume playback.');if(state.now&&!state.now.playing&&!health.idle)parts.push('Playback paused');$('playback-health').textContent=parts.join(' · ');$('playback-health').classList.toggle('health-alert',health.stale||health.status==='Needs attention');const upcoming=state.spotify_upcoming;$('spotify-age').textContent=upcoming.error?('Spotify queue unavailable: '+upcoming.error):(upcoming.updated?'Updated '+new Date(upcoming.updated*1000).toLocaleTimeString()+' · refreshes about every 30 seconds':'Waiting for Spotify queue snapshot.');if(upcoming.warning)$('spotify-age').textContent+=' · '+upcoming.warning;$('spotify-tracks').replaceChildren();for(const song of upcoming.items){const r=el('div',undefined,'song');r.append(cover(song),info(song));$('spotify-tracks').append(r);}if(upcoming.updated&&!upcoming.items.length&&!upcoming.error)$('spotify-tracks').append(el('p','Spotify reports no upcoming tracks.','muted'));if(state.now?.requested_by)$('now').append(el('p','Requested by '+state.now.requested_by));if(state.now?.playing&&state.background)$('now').append(el('p','Background music · make a request to join the mix.'));else if(health.idle&&state.now)$('now').append(el('p','Playback finished. The next request will start the music.'));if(state.play_id&&state.now?.playing){const reactions=el('div',undefined,'reactions');const count=state.reactions.reduce((sum,x)=>sum+x.count,0);const playId=state.play_id;const b=el('button',(state.liked?'♥ Liked':'♥ Like this song')+' · '+count,state.liked?'voted':'secondary');b.setAttribute('aria-pressed',String(!!state.liked));b.disabled=!!state.liked;b.onclick=protectedAction(async()=>{await api('/api/react',{reaction:'like',play:playId});await refresh();});reactions.append(b,el('small','Likes appreciate this song; queue upvotes choose what plays next.','muted'));$('now').append(reactions);}if(state.host&&location.pathname==='/host'&&!configBuilt){buildHostConfig();configBuilt=true;}if(!state.host){configBuilt=false;$('room-host-tools').replaceChildren();}if(displayMode&&!displayQR){displayQR=true;api('/api/share').then(share=>{const box=el('div');box.id='display-qr';$('now').parentElement.append(box,el('p','Scan to request from your phone.','muted'));new QRCode(box,{text:share.url,width:120,height:120,correctLevel:QRCode.CorrectLevel.M});}).catch(()=>{displayQR=false;});}}
 function field(grid,label,id,type='text',value=''){const wrap=el('label',label);const input=el(type==='textarea'?'textarea':'input');input.id=id;input.name=id;input.autocomplete='off';if(type!=='textarea')input.type=type;if(type==='number'){input.min='0';input.max='1440';input.step='1';}if(type==='checkbox')input.checked=Boolean(value);else input.value=value;wrap.append(input);grid.append(wrap);return input;}
 function buildHostConfig(){if(typeof clearHostSections==='function')clearHostSections();const root=$('room-host-tools');root.replaceChildren();const details=el('details');details.id='host-room-config-panel';details.append(el('summary','Queue rules, theme & guest wording'));const form=el('form'),grid=el('div',undefined,'config-grid');form.id='host-room-config';form.name='host-room-config';form.autocomplete='off';const r=state.room;
 field(grid,'Fair queue enabled','cfg-fair','checkbox',r.fair_queue);field(grid,'Block explicit / unknown ratings','cfg-explicit','checkbox',r.block_explicit);

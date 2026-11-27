@@ -43,7 +43,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         const key=scope();
         const entry={key,value:value??read(),status:'Waiting to save…'};
         drafts.set(key,entry);
-        if(entry.value===null||(value===undefined&&!form.checkValidity())){
+        if(entry.value===null||(value===undefined&&form.checkValidity?.()===false)){
             pending.delete(key);
             entry.status='Check the highlighted fields before saving.';
             display(entry);
@@ -88,7 +88,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
     const recovery = controls.querySelector('.player-recovery');
     const shell = document.createElement('div');
     shell.innerHTML = `
-      <div class="host-help-links"><button id="host-help" type="button" class="secondary" aria-controls="host-start-guide">Help</button><p id="host-start-reminder" class="muted"></p><button type="button" class="secondary" id="host-install" hidden>Add Host Desk to Home Screen</button></div>
+      <div class="host-help-links"><button id="host-help" type="button" class="secondary" aria-controls="host-start-guide">Help</button><p id="host-start-reminder" class="muted"></p><a class="secondary host-guest-link" href="/">Guest page</a></div>
       <details id="host-start-guide" class="host-card"><summary>How to Start a Session</summary>
         <ol><li>Sign into the Host desk and turn on the playback player and speakers.</li>
         <li>Refresh players and select the room’s player. For the garage, choose UnicornPlayer - Garage.</li>
@@ -121,7 +121,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
             <div class="host-action-row"><div id="host-pause-slot"></div><p id="host-pause-help">Pause audio and stop automatic request handoff.</p></div>
             <div class="host-action-row"><div id="host-skip-slot"></div><p>Play the next request; if none is waiting, advance Spotify.</p></div>
             <div class="host-action-row"><div id="host-stop-slot"></div><p>Stop automatic handoff. Music already playing continues.</p></div>
-            <div class="host-action-row"><button id="host-end-session" type="button" class="secondary">End Session</button><p>Archive queued requests, reset the gathering, and shut down the linked Pine64.</p></div><p id="host-end-status" role="status"></p>
+            <div class="host-action-row"><button id="host-end-session" type="button" class="secondary">End Session</button><p>Archive queued requests, reset the gathering, and shut down the linked Pine64.</p></div><p id="host-end-status" class="host-shutdown-callout" role="status"></p>
           </div>
         </div>
         <p id="host-background-status" role="status"></p><p id="host-soloist-expiry" role="status"></p>
@@ -131,7 +131,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
       <section id="host-panel-music" class="host-panel" role="tabpanel" aria-labelledby="host-tab-music" tabindex="0" hidden>
         <div class="host-panel-heading"><h3>Music library</h3><p>Choose playlists for guests and maintain the local library.</p></div>
 
-        <div id="host-playlists-slot"></div>
+        <button id="host-library-browse" type="button" class="secondary">Browse Local Files</button><div id="host-playlists-slot"></div>
         <button type="button" class="secondary" data-host-volume>Local library scan &amp; loudness matching</button>
       </section>
       <section id="host-panel-room" class="host-panel" role="tabpanel" aria-labelledby="host-tab-room" tabindex="0" hidden>
@@ -142,13 +142,16 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
       <section id="host-panel-player" class="host-panel" role="tabpanel" aria-labelledby="host-tab-player" tabindex="0" hidden>
         <div class="host-panel-heading"><h3>Player settings</h3><p><strong id="host-editing-player">No player selected</strong></p><p>Choose the player you want to configure in Playback.</p></div>
         <div class="host-card"><h4>Default background music</h4><p id="host-default-player"></p>
-        <p id="host-default-name"></p><button type="button" class="secondary" data-background-pick="player">Browse Spotify playlists</button><form class="host-settings-form" id="host-background-form"><label for="host-background-uri">Spotify playlist, album or artist link or URI</label><input id="host-background-uri" type="text" maxlength="200"></form><p id="host-default-status" role="status"></p></div>
-        <div class="host-card"><h4>Guest welcome</h4><form id="host-player-welcome-form" class="host-settings-form">
+        <p id="host-default-name"></p><label class="host-inline-toggle"><input id="host-background-shuffle" type="checkbox"> Shuffle background playlist</label><p id="host-background-shuffle-status" role="status"></p><button type="button" class="secondary" data-background-pick="player">Browse Spotify playlists</button><form class="host-settings-form" id="host-background-form"><label for="host-background-uri">Spotify playlist, album or artist link or URI</label><input id="host-background-uri" type="text" maxlength="200"></form><p id="host-default-status" role="status"></p></div>
+        <div class="host-card"><h4>Guest welcome</h4>
+          <label class="host-inline-toggle"><input type="checkbox" id="host-main-headline-mode"> Use the Main headline</label>
+          <p id="host-headline-mode-status" role="status"></p>
+          <p id="host-main-headline-preview" class="headline-preview" aria-label="Main headline preview" hidden></p><form id="host-player-welcome-form" class="host-settings-form">
           <label for="host-player-welcome">Welcome for this player</label><input type="text" id="host-player-welcome" maxlength="300">
-          <p class="muted">Leave blank to hide the guest heading.</p><p id="host-player-welcome-current" class="muted"></p>
+          <p class="muted">Leave blank to use the default welcome.</p><p id="host-player-welcome-current" class="muted"></p>
           <label for="host-player-accent">Text to highlight in red</label><input type="text" id="host-player-accent" maxlength="300">
           <p id="host-player-welcome-preview" class="headline-preview" aria-label="Welcome preview"></p>
-          <div class="buttons"><button type="button" class="secondary" id="host-player-welcome-restore">Restore default</button></div>
+          <div class="buttons"><button type="button" class="secondary" id="host-player-welcome-restore">Reset to default</button></div>
         </form><p id="host-player-welcome-status" role="status"></p></div>
         <div class="host-card"><h4>Power-on behavior</h4>
           <form id="host-player-power-form" class="host-settings-form">
@@ -162,18 +165,19 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         </div>
         <section id="host-audio-levels" class="host-card" tabindex="-1" aria-labelledby="host-volume-title">
           <h4 id="host-volume-title">Volume controls</h4>
+          <p>Use the amp for everyday listening volume. Adjust Spotify and local-file levels to balance the two sources. Leave Player output at its established level unless both sources need the same adjustment.</p><p class="muted">With automatic loudness enabled, the local level is a calibration reference. <a href="#host-loudness-slot" id="host-loudness-link">Open loudness matching</a>.</p>
           <p id="host-volume-device"></p>
           <button id="host-refresh-volumes" type="button" class="secondary">Refresh volume levels</button>
           <div class="host-volume-grid">
             <form id="host-spotify-volume-form">
               <h5>Spotify volume</h5><p class="muted">Spotify playback on the selected Connect player.</p>
-              <label for="host-spotify-volume">Spotify level (0–100)</label><input id="host-spotify-volume" type="number" min="0" max="100" step="1" required>
+              <label for="host-spotify-volume">Spotify level (0–100)</label><input id="host-spotify-volume" placeholder="Unavailable" type="number" min="0" max="100" step="1" required>
               <button type="submit" class="secondary">Apply Spotify volume</button><p id="host-spotify-volume-status" role="status"></p>
             </form>
             <div id="host-volume-slot"><h5>Local-file volume</h5><p class="muted">Local files through MPD.</p><p id="host-local-volume-binding" role="status"></p></div>
             <form id="host-output-volume-form">
               <h5>Player output volume</h5><p class="muted">Changes all audio routed through the player’s default PulseAudio output.</p>
-              <label for="host-output-volume">Output level (0–100)</label><input id="host-output-volume" type="number" min="0" max="100" step="1" required>
+              <label for="host-output-volume">Output level (0–100)</label><input id="host-output-volume" placeholder="Not read yet" type="number" min="0" max="100" step="1" required>
               <button type="submit" class="secondary">Apply output volume</button><p id="host-output-volume-status" role="status"></p>
             </form>
           </div>
@@ -218,11 +222,17 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
     $('refreshdevices').textContent='Refresh players';$('stop').textContent='Stop handoff';
     $('pause').textContent='Pause music';$('skip').textContent='Next track';
     $('logout').textContent='Sign out of host controls';
-    const guestHeading = document.createElement('div');guestHeading.className='host-guest-heading';
-    guestHeading.innerHTML='<h2>Find music &amp; manage the queue</h2><p>Requests and queue controls are below. Adding a song is separate from starting the session.</p>';
-    $('room-toolbar').before(guestHeading);
-    // Keep guest tools immediately above search instead of above the host workspace.
-    $('host').after(guestHeading,$('room-toolbar'));
+    const management=document.createElement('section');
+    management.className='host-playback-library';
+    management.append($('guest-search-section').closest('.layout'));
+    $('host-panel-playback').append(management);
+    $('room-toolbar').hidden=true;
+    $('host-library-browse').onclick=()=>{
+        select('playback');
+        $('browse-local').click();
+        $('guest-search-section').scrollIntoView({block:'start'});
+    };
+    $('host-loudness-link').onclick=()=>$('host-loudness-slot').closest('details').open=true;
     controls.querySelectorAll('[data-host-volume]').forEach(button=>{
         button.onclick=()=>{
             select('player');
@@ -264,10 +274,12 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
     $('save').setAttribute('aria-describedby','host-start-help');
     window.renderHostDesk=(current,dirty)=>{
         $('host-signed-in').hidden=!current.host;
-        if(!current.host){renderVolumeControls({});select('playback');accountLoaded=false;clearTimeout(accountTimer);showAccount({status:'unavailable'});return;}
+        if(!current.host){$('host-install').hidden=true;renderVolumeControls({});select('playback');accountLoaded=false;clearTimeout(accountTimer);showAccount({status:'unavailable'});return;}
         if(!accountLoaded)checkAccount();
         if(typeof offerHomeScreenInstall==='function')offerHomeScreenInstall(true);
         renderVolumeControls(current);
+        refreshRunningVolumes(current);
+        renderShutdownProgress(current);
         $('host-soloist-expiry').textContent=current.soloist_expiry_warning?
             'Soloist expiry is approaching. Check Soloist updates in Setup & troubleshooting. '+(current.soloist_schedule_warning||''):'';
         const scheduleDraft=scheduleAutosave.draft();
@@ -300,6 +312,8 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         $('host-end-session').disabled=!current.device||!current.local_player?.enabled||current.local_player.device!==current.device||
             selected!==current.device||$('host-end-session').dataset.busy==='true';
         renderPlayerCopy(current, selected);
+        shuffleControl.checked=shuffleAutosave.draft()?.enabled??(current.player_background_shuffle?.[selected]!==false);
+        shuffleAutosave.sync();
         const currentOverride=background.override||{};
         const currentHouse=background.house||{};
         for(const [key,config] of Object.entries({player:background.defaults?.[selected],gathering:currentOverride,house:currentHouse})){
@@ -358,15 +372,33 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         apply:value=>api('/api/host/player-auto-start',value),
         renderDraft:()=>{power.checked=state.player_auto_start?.[selectedDevice()]!==false;}
     });
+    const mainMode=$('host-main-headline-mode'), shuffleControl=$('host-background-shuffle');
+    function bindPlayerToggle(input,status,path){
+        return bindSettingsAutosave(input.closest('.host-card'),{
+            controls:[input],status:$(status),scope:selectedDevice,delay:0,rollback:true,
+            read:()=>({device:selectedDevice(),enabled:input.checked}),apply:value=>api(path,value),
+            renderDraft:()=>renderHostDesk(state,settingsDirty)
+        });
+    }
+    const modeAutosave=bindPlayerToggle(mainMode,'host-headline-mode-status','/api/host/player-headline-mode');
+    const shuffleAutosave=bindPlayerToggle(shuffleControl,'host-background-shuffle-status','/api/host/player-background-shuffle');
     function renderPlayerCopy(current, selected){
         const name=$('devices').selectedOptions[0]?.dataset.name;
         const value=current.player_welcomes?.[selected];
         const inherited=name?'Welcome to '+name:'';
         const draft=welcomeAutosave.draft();
-        welcome.value=draft?.welcome??value??'';
+        welcome.value=draft?.welcome??(value||inherited);
+        mainMode.checked=modeAutosave.draft()?.enabled??!!current.player_main_headline?.[selected];
+        $('host-player-welcome-form').hidden=mainMode.checked;
+        const preview=$('host-main-headline-preview');
+        preview.hidden=!mainMode.checked;
+        const heading=current.room?.copy?.headline||'', accent=current.room?.headline_accent||'';
+        if(typeof renderHeadline==='function')renderHeadline(preview,heading||'Main headline is blank.',accent,
+            heading==='What should we play next?'&&!accent);
+        modeAutosave.sync();
         welcomeAccent.value=draft?.accent??current.player_accents?.[selected]??'';
         power.checked=powerAutosave.draft()?.enabled??(current.player_auto_start?.[selected]!==false);
-        $('host-player-welcome-current').textContent='Default: '+(inherited||'Unavailable')+' · Current: '+(value===undefined?inherited||'Unavailable':value||'Hidden');
+        $('host-player-welcome-current').textContent='Default: '+(inherited||'Unavailable')+' · Current: '+(value||inherited||'Unavailable');
         $('host-player-power-status').textContent=current.boot_start_status?.[selected]?.message||'';
         welcomeAutosave.sync();powerAutosave.sync();
         updatePlayerPreview();
@@ -390,18 +422,26 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         }catch(error){if(device===selectedDevice())status.textContent=error.message;}
         finally{button.disabled=false;}
     };
+    function renderShutdownProgress(current){
+        const status=$('host-end-status'), progress=current.shutdown_progress?.[current.device];
+        if(status.dataset.error!=='true'){
+            if(current.enabled)status.textContent='';
+            else if(progress)status.textContent=progress.message;
+        }
+    }
     $('host-end-session').onclick=async event=>{
         const button=event.currentTarget, device=selectedDevice();
         const name=$('devices').selectedOptions[0]?.dataset.name;
         if(!confirm('End the session on '+name+', archive queued requests, and shut down its Pine64?'))return;
         const status=$('host-end-status');
+        delete status.dataset.error;
         button.dataset.busy='true';
         button.disabled=true;
         try{
             await api('/api/host/end-session',{device,confirm:true});
             submitted.clear();
-            status.textContent='Shutdown accepted. Wait for the Pine64 to shut down before switching off the amp.';
-        }catch(error){status.textContent=error.message;}
+            status.textContent='Pine64 is shutting down. Wait before switching off the amp.';
+        }catch(error){status.dataset.error='true';status.textContent=error.message;}
         finally{delete button.dataset.busy;await refresh();}
     };
     controls.querySelectorAll('[data-background-pick]').forEach(button=>{
@@ -446,6 +486,8 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
     const pulseSave=$('host-output-volume-form').querySelector('button');
     let volumeDevice, outputSink, outputGeneration=0, volumeSelectionGeneration=0;
     let spotifyOption, outputAvailable, spotifyBusy=false, outputBusy=false;
+    spotifyLevel.oninput=()=>{spotifyLevel.dataset.dirty='true';};
+    pulseLevel.oninput=()=>{pulseLevel.dataset.dirty='true';};
 
     function renderVolumeControls(current){
         const option=current.host?$('devices').selectedOptions[0]:null;
@@ -454,6 +496,8 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         const changed=volumeDevice!==device||outputAvailable!==localLinked;
         $('host-volume-device').textContent=option?.dataset.name||'Choose a player in Playback.';
         if(changed){
+            delete spotifyLevel.dataset.dirty;
+            delete pulseLevel.dataset.dirty;
             outputGeneration++;
             volumeSelectionGeneration++;
             volumeDevice=device;
@@ -464,7 +508,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         }
         if(changed||spotifyOption!==option){
             spotifyOption=option;
-            spotifyLevel.value=option?.dataset.volume||'';
+            if(changed||(!spotifyLevel.dataset.dirty&&document.activeElement!==spotifyLevel))spotifyLevel.value=option?.dataset.volume||'';
             spotifyStatus.textContent=option?.dataset.volumeSupported==='true'?'':'Spotify has not reported volume control for this player.';
         }
         spotifyLevel.disabled=option?.dataset.volumeSupported!=='true';
@@ -475,12 +519,30 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         for(const id of ['local-scan','loudness-refresh','loudness-cancel','loudness-enabled','loudness-target','loudness-output']){
             if(changed)$(id).disabled=!localLinked;
         }
+        if(changed&&localLinked&&latestOutputByDevice.has(device))reportOutput(latestOutputByDevice.get(device));
         $('host-local-volume-binding').textContent=localLinked?'':'Select the player linked to MPD to apply local levels.';
+    }
+
+    let lastRunningDevice='';
+    const latestOutputByDevice=new Map();
+    function refreshRunningVolumes(current){
+        const device=current.enabled?current.device:'';
+        if(!device){lastRunningDevice='';return;}
+        if(device===lastRunningDevice)return;
+        lastRunningDevice=device;
+        loadDevices();
+        if(current.local_player?.enabled&&current.local_player.device===device){
+            api('/api/host/output-volume-status',{device}).then(result=>{
+                if(state.device!==device||!state.enabled)return;
+                latestOutputByDevice.set(device,result);
+                if(volumeDevice===device&&!outputBusy)reportOutput(result);
+            }).catch(error=>{if(volumeDevice===device)pulseStatus.textContent=error.message;});
+        }
     }
 
     function reportOutput(result){
         outputSink=result.sink;
-        pulseLevel.value=result.volume<=100?result.volume:'';
+        if(!pulseLevel.dataset.dirty&&document.activeElement!==pulseLevel)pulseLevel.value=result.volume<=100?result.volume:'';
         pulseStatus.textContent='Output: '+result.sink+' · '+result.volume+'%'+(result.muted?' · Muted at the device':'');
         pulseLevel.disabled=pulseSave.disabled=false;
     }
@@ -509,6 +571,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         spotifyBusy=spotifySave.disabled=true;
         try{
             await api('/api/host/spotify-volume',{device,volume:spotifyLevel.valueAsNumber});
+            if(device===volumeDevice)delete spotifyLevel.dataset.dirty;
             if(generation===volumeSelectionGeneration)spotifyStatus.textContent='Spotify accepted the change. Refresh volume levels to confirm.';
         }catch(error){if(generation===volumeSelectionGeneration)spotifyStatus.textContent=error.message;}
         finally{spotifyBusy=false;spotifySave.disabled=spotifyLevel.disabled;}
@@ -519,6 +582,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         outputBusy=pulseSave.disabled=true;
         try{
             const result=await api('/api/host/output-volume',{device,sink:outputSink,volume:pulseLevel.valueAsNumber});
+            if(device===volumeDevice)delete pulseLevel.dataset.dirty;
             if(generation===outputGeneration)reportOutput(result);
         }catch(error){if(generation===outputGeneration)pulseStatus.textContent=error.message;}
         finally{outputBusy=false;pulseSave.disabled=!outputSink;}

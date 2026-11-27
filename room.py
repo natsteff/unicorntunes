@@ -389,17 +389,24 @@ class RoomFeatures(RequestHistory):
         host = self.sessions.get(sid, {}).get('host')
         welcomes = self.meta('player_welcomes', {})
         player_name = self.meta('player_names', {}).get(self.device)
-        welcome = welcomes.get(self.device, 'Welcome to ' + player_name if player_name else '') if self.device else None
+        headline_modes = self.meta('player_main_headline', {})
+        use_main = not self.device or headline_modes.get(self.device, False)
+        custom_welcome = welcomes.get(self.device, '').strip()
+        welcome = None if use_main else custom_welcome or ('Welcome to ' + player_name if player_name else None)
         maintenance = self.meta('soloist_update_status', {}) if host else {}
         return {'welcome_headline': welcome,
                 'player_auto_start': self.meta('player_auto_start', {}) if host else {},
                 'boot_start_status': self.meta('boot_start_status', {}) if host else {},
                 'soloist_expiry_warning': bool(maintenance.get('device') == self.device and maintenance.get('expiry_warning')),
                 'soloist_schedule_warning': self.meta('soloist_update_schedule_message', '') if host else '',
+                'guest_library': {'device':self.device, 'name':player_name} if self.local_bound() else None,
                 'player_welcomes': welcomes if host else {},
+                'player_main_headline': headline_modes if host else {},
+                'player_background_shuffle': self.meta('player_background_shuffle', {}) if host else {},
+                'shutdown_progress': self.meta('shutdown_progress', {}) if host else {},
                 'player_accents': self.meta('player_welcome_accents', {}) if host else {},
                 'headline_accent': self.meta('player_welcome_accents', {}).get(self.device, '')
-                    if self.device else self.room.get('headline_accent', ''),
+                    if not use_main and custom_welcome else self.room.get('headline_accent', '') if use_main else '',
                 'soloist_update_schedule': self.meta('soloist_update_schedule', {}) if host else {},
                 'background_music': self.background_state() if self.sessions.get(sid, {}).get('host') else None, 'now': now, 'profile': {'name': profile['name'] if profile else SHY, 'named': bool(profile and profile['named'])},
                 'local_player': dict(self.local_config, count=self.db.execute('SELECT count(*) FROM local_tracks').fetchone()[0]) if self.sessions.get(sid, {}).get('host') else None,
@@ -501,13 +508,22 @@ class RoomFeatures(RequestHistory):
             # Rules affect future selections too. Host can remove newly blocked waiting tracks explicitly.
             f.private_write(self.data / 'room.json', proposal)
             self.room = proposal
-        elif route in ('/api/host/player-welcome', '/api/host/player-auto-start'):
+        elif route in ('/api/host/player-welcome', '/api/host/player-auto-start', '/api/host/player-headline-mode', '/api/host/player-background-shuffle'):
             device = str(body.get('device', ''))
             if not device or (device != self.device and not any(
                 item.get('id') == device and not item.get('is_restricted')
                 for item in self.api.call('/me/player/devices').get('devices', [])
             )):
                 raise f.Failure('Choose an available player before saving its welcome heading.')
+            if route in ('/api/host/player-headline-mode', '/api/host/player-background-shuffle'):
+                enabled = body.get('enabled')
+                if type(enabled) is not bool:
+                    raise f.Failure('Choose whether to enable this setting.')
+                key = 'player_main_headline' if route.endswith('headline-mode') else 'player_background_shuffle'
+                values = self.meta(key, {})
+                values[device] = enabled
+                self.set_meta(key, values)
+                return {'ok':True}
             if route.endswith('auto-start'):
                 enabled = body.get('enabled')
                 if type(enabled) is not bool:

@@ -223,6 +223,21 @@ class BackgroundTests(unittest.TestCase):
         self.app.poll(True)
         self.assertFalse(self.app.enabled)
 
+    def test_background_shuffle_is_disabled_before_the_first_request(self):
+        self.save_background()
+        self.spotify.state.update(context={'uri':CONTEXT},shuffle_state=False)
+        self.events.clear()
+        self.app.poll(True)
+        self.assertTrue(any(event[:3]==('spotify','/me/player/shuffle','PUT') for event in self.events))
+        self.spotify.state['shuffle_state'] = True
+        self.app.submit(self.sid,A)
+        self.events.clear()
+        self.app.poll(True)
+        self.assertFalse(any(event[:3]==('spotify','/me/player/play','PUT') for event in self.events))
+        self.spotify.state['shuffle_state'] = False
+        self.app.poll(True)
+        self.assertTrue(any(event[:3]==('spotify','/me/player/play','PUT') for event in self.events))
+
     def test_skipping_last_spotify_request_returns_to_background(self):
         self.save_background()
         self.owned(A)

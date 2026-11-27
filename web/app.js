@@ -26,7 +26,7 @@ let actionRefreshTimer;
 async function refreshAfterPlaybackAction(){clearTimeout(actionRefreshTimer);await refresh();let remaining=6;const tick=async()=>{if(!state.host||document.hidden)return;await refresh();if(--remaining>0)actionRefreshTimer=setTimeout(tick,1000);};actionRefreshTimer=setTimeout(tick,1000);}
 function render(){for(const uri of submitted)if(!state.queue.some(s=>s.uri===uri)&&state.now?.uri!==uri)submitted.delete(uri);updateRequestButtons();const now=$('now');now.replaceChildren();if(state.now){const song=state.now;const title=el('h2'),link=el(song.source==='local'?'span':'a',song.name);link.href=safeURL(song.url)||'#';link.target='_blank';link.rel='noopener noreferrer';title.append(link);if(song.source==='local')now.append(el('span','Local file','source-badge'));now.append(cover(song),title,el('p',song.artists),el('p',song.playing?'Now playing':(state.handoff?.idle?'Waiting for the next request':'Playback paused')));const bar=el('div',undefined,'nowprogress'),fill=el('div');fill.style.width=Math.min(100,Math.max(0,100*(song.progress_ms||0)/(song.duration_ms||1)))+'%';bar.append(fill);now.append(bar);}else now.append(el('h2','Waiting for the music'),el('p','The host will get things started.'));
 const queue=$('queue');queue.replaceChildren();$('count').textContent=state.queue.length+' REQUEST'+(state.queue.length===1?'':'S');for(const [index,song]of state.queue.entries()){const row=el('div',undefined,'song'+(song.mine?' my-request':''));row.append(el('span',String(index+1).padStart(2,'0'),'rank'),cover(song));const details=info(song);details.append(el('small','Requested by '+song.requested_by));if(song.mine)details.append(el('small','Your request','ownership'));if(song.upvoted_by?.length)details.append(el('small','Upvoted by '+song.upvoted_by.join(', ')));if(song.protected)details.append(el('small','Next request · protected','protected-label'));else if(song.guaranteed&&state.room?.fair_queue)details.append(el('small','Protected first turn'));if(song.state!=='waiting')details.append(el('small',{'accepted':song.source==='local'?'Starting local playback · locked':'Handed to Spotify · locked','queued':'In Spotify queue · locked','playing':'Playing','uncertain':'Awaiting host review','sending':'Sending · locked'}[song.state]||song.state));row.append(details);const vote=button((song.voted?'✓ ':'↑ ')+song.votes,()=>api('/api/vote',{id:song.id}),song.voted?'voted':'secondary');vote.setAttribute('aria-label',(song.voted?'Voted for ':'Vote for ')+song.name);vote.disabled=song.voted||song.state!=='waiting';row.append(vote);if(state.host&&song.state==='waiting')row.append(button('Remove',()=>api('/api/host/remove',{id:song.id}),'secondary'));if(state.host&&['uncertain','accepted','queued'].includes(song.state))row.append(button('Reconcile',async()=>{const note=prompt('Check the actual player and queue first. Describe what you found. A local track will be stopped before releasing its request; Spotify entries must be checked separately.');if(note)await api('/api/host/reconcile',{id:song.id,note});},'secondary'));queue.append(row);}if(!state.queue.length)queue.append(el('p',state.now?.playing?'Background music is playing. Request something you love.':(state.handoff?.idle?'Player ready. Request a song to start the music.':'An open queue. A world of possibilities.'),'empty'));
-if(state.handoff)$('handoffstatus').textContent=state.handoff.status+(state.handoff.reason?' — '+state.handoff.reason:'');if(state.host){$('save').textContent=state.enabled?'Move / restart session here':'Start session';$('stop').disabled=!state.enabled;$('pause').textContent=state.now&&!state.now.playing?'Resume playback':'Pause playback';$('pause').disabled=!state.now||state.handoff?.stale;$('connection').textContent=state.spotify_connected?'Spotify authorization saved.':'Connect Spotify before selecting a playback device.';if(!$('accepting').disabled)$('accepting').checked=state.accepting;if(!settingsDirty&&state.device&&Array.from($('devices').options).some(option=>option.value===state.device))$('devices').value=state.device;}if(location.pathname==='/host'){$('browse-local').hidden=!state.host;invalidateLocalBrowse();$('host').hidden=false;$('login').hidden=state.host;$('controls').hidden=!state.host;if(state.host&&!devicesLoaded)loadDevices();if(state.host&&typeof renderLocalPlayer==='function')renderLocalPlayer();}if(state.error&&state.host&&location.pathname==='/host')message(state.error);if(typeof renderRoom==='function')renderRoom();if(typeof renderHostDesk==='function'){window.hostDeskState=state;renderHostDesk(state,settingsDirty);}}
+if(state.handoff)$('handoffstatus').textContent=state.handoff.status+(state.handoff.reason?' — '+state.handoff.reason:'');if(state.host){$('save').textContent=state.enabled?'Move / restart session here':'Start session';$('stop').disabled=!state.enabled;$('pause').textContent=state.now&&!state.now.playing?'Resume playback':'Pause playback';$('pause').disabled=!state.now||state.handoff?.stale;$('connection').textContent=state.spotify_connected?'Spotify authorization saved.':'Connect Spotify before selecting a playback device.';if(!$('accepting').disabled)$('accepting').checked=state.accepting;if(!settingsDirty&&state.device&&Array.from($('devices').options).some(option=>option.value===state.device))$('devices').value=state.device;}if(location.pathname==='/host'){$('browse-local').hidden=!state.host;invalidateLocalBrowse();$('host').hidden=false;$('login').hidden=state.host;$('controls').hidden=!state.host;if(state.host&&!devicesLoaded)loadDevices();if(state.host&&typeof renderLocalPlayer==='function')renderLocalPlayer();}if(location.pathname==='/'){$('browse-local').hidden=false;invalidateLocalBrowse();}if(state.error&&state.host&&location.pathname==='/host')message(state.error);if(typeof renderRoom==='function')renderRoom();if(typeof renderHostDesk==='function'){window.hostDeskState=state;renderHostDesk(state,settingsDirty);}}
 async function loadDevices(){devicesLoaded=true;try{const data=await api('/api/host/devices');const previous=$('devices').value;$('devices').replaceChildren();for(const d of data.devices){if(d.is_restricted)continue;const o=el('option',d.name+(d.is_active?' · active':''));o.value=d.id;o.dataset.name=d.name;o.dataset.volume=d.volume_percent??'';o.dataset.volumeSupported=String(d.supports_volume===true);$('devices').append(o);if(d.id===state.device||(!state.device&&d.is_active))o.selected=true;}if(settingsDirty&&Array.from($('devices').options).some(option=>option.value===previous))$('devices').value=previous;invalidateLocalBrowse();if(!$('accepting').disabled)$('accepting').checked=state.accepting;if(typeof renderHostDesk==='function')renderHostDesk(state,settingsDirty);}catch(e){devicesLoaded=false;message(e.message);}}
 function resetSearchResults(){
     searchGeneration++;
@@ -41,7 +41,7 @@ async function search(){
     params.set('offset',offset);
     params.set('limit',limit);
     const player=libraryPlayer;
-    const label=player?'Local files — '+($('devices').selectedOptions[0]?.dataset.name||'Selected player')+' · ':'';
+    const label=player?'Local files — '+((location.pathname==='/host'?$('devices').selectedOptions[0]?.dataset.name:state.guest_library?.name)||'Selected player')+' · ':'';
     if(player)params.set('player',player);
     $('searchinfo').textContent=label+'Searching…';
     $('previous').disabled=$('next').disabled=true;
@@ -73,7 +73,7 @@ async function search(){
 function submitSearch(player=''){
     libraryPlayer=player;
     searchParams=new URLSearchParams({
-        q:$('query').value.trim(),source:$('search-source').value,track:$('search-title').value.trim(),
+        q:$('query').value.trim(),mode:$('search-artist-only').checked?'artist':$('search-title-only').checked?'track':'',source:$('search-source').value,track:$('search-title').value.trim(),
         artist:$('search-artist').value.trim(),album:$('search-album').value.trim(),
         year:$('search-year').value.trim(),exact:$('search-exact').checked?'1':'0'
     });
@@ -85,24 +85,37 @@ $('search').onsubmit=event=>{
     event.preventDefault();
     const selectedLocal=location.pathname==='/host'&&state.host&&$('search-source').value==='local';
     if(selectedLocal&&!$('devices').value){message('Choose a playback device first.');return;}
-    submitSearch(selectedLocal?$('devices').value:'');
+    const guestLocal=location.pathname==='/'&&$('search-source').value==='local';
+    if(guestLocal&&!state.guest_library?.device){message('This player has no local library available.');return;}
+    submitSearch(selectedLocal?$('devices').value:guestLocal?state.guest_library.device:'');
 };
 $('search-limit').onchange=()=>{if(searchParams){offset=0;search();}};
 $('previous').onclick=()=>{offset=Math.max(0,offset-Number($('search-limit').value));search();};
 $('next').onclick=()=>{offset+=Number($('search-limit').value);search();};
 function invalidateLocalBrowse(){
-    if(libraryPlayer&&(!state.host||libraryPlayer!==$('devices').value)){
+    if(libraryPlayer&&(location.pathname==='/host'?(!state.host||libraryPlayer!==$('devices').value):libraryPlayer!==state.guest_library?.device)){
         libraryPlayer='';
         searchParams=null;
         resetSearchResults();
     }
 }
 $('browse-local').onclick=()=>{
-    if(!state.host||!$('devices').value){message('Choose a playback device first.');return;}
+    const host=location.pathname==='/host';
+    const device=host?(state.host&&$('devices').value):state.guest_library?.device;
+    if(!device){message(host?'Choose a playback device first.':'This player has no local library available.');return;}
     $('search').reset();
     $('search-source').value='local';
-    submitSearch($('devices').value);
+    submitSearch(device);
+    if(!host)jumpToSearch();
 };
+function jumpToSearch(){
+    $('guest-search-section').scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+    $('query').focus({preventScroll:true});
+}
+$('guest-search-jump').onclick=jumpToSearch;
+for(const [id,other] of [['search-artist-only','search-title-only'],['search-title-only','search-artist-only']]){
+    $(id).onchange=()=>{if($(id).checked)$(other).checked=false;};
+}
 $('devices').addEventListener('change',invalidateLocalBrowse);
 $('login').onsubmit=async e=>{e.preventDefault();try{await api('/api/host/login',{password:$('password').value});$('password').value='';devicesLoaded=false;message('');await refresh();}catch(e){message(e.message);}};
 $('devices').onchange=()=>{settingsDirty=$('devices').value!==state.device;};

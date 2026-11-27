@@ -90,8 +90,7 @@ class MixedPlaybackTests(unittest.TestCase):
         result = self.app.mixed_search(query, host=True)
         self.assertEqual((result['total'], result['more']), (1, False))
         self.assertEqual(result['items'][0]['uri'], LOCAL)
-        with self.assertRaises(f.Failure):
-            self.app.mixed_search(query)
+        self.assertEqual(self.app.mixed_search(query)['items'][0]['uri'], LOCAL)
         query['player'] = ['other']
         with self.assertRaises(f.Failure):
             self.app.mixed_search(query, host=True)

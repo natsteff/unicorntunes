@@ -45,3 +45,16 @@
 #install-dialog form{margin-top:16px}
 
 .intro[hidden],[id^="copy-"][hidden]{display:none}
+
+#guest-greeting{margin-bottom:8px}
+#edit-guest-name{color:#eee;background:transparent;text-decoration:underline;padding:4px 0;border:0}
+.quick-search-filters{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:12px}
+.quick-search-filters label{display:flex;align-items:center;gap:5px;font-size:13px}
+.guest-page #room-toolbar>a{flex-basis:100%}
+@media(max-width:600px){
+ .guest-page #room-toolbar{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;align-items:stretch}
+ .guest-page #room-toolbar>button{white-space:normal;padding:6px 4px;min-height:44px;font-size:11px}
+ .guest-page #room-toolbar>a{grid-column:1/-1}
+ .header-actions{gap:6px}#host-install{white-space:normal;max-width:130px}
+}
+@media(max-width:320px){.guest-page #room-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))}}
