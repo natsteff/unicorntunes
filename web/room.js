@@ -145,18 +145,20 @@ function renderHeadline(node, text, accent, stock=false){
     node.append(text.slice(0,start),el('em',accent),text.slice(start+accent.length));
 }
 function addHeadlineAccent(grid,input,id,value){
-    const accent=field(grid,'Text to highlight in red',id,'text',value||'');
+    const accent=field(grid,'Highlight in red for main headline',id,'text',value||'');
     accent.maxLength=300;
     const preview=el('p',undefined,'headline-preview');
     preview.setAttribute('aria-label','Headline preview');
     const update=()=>renderHeadline(preview,input.value,accent.value);
     input.addEventListener('input',update);accent.addEventListener('input',update);
-    grid.append(preview);update();
+    const previewGroup=el('div',undefined,'headline-preview-group');
+    previewGroup.append(el('strong','Headline Preview:'),preview);
+    grid.append(previewGroup);update();
     return accent;
 }
 function renderCopy(){
     const c=state.room.copy;
-    const text={tagline:c.tagline,headline:state.welcome_headline??c.headline,
+    const text={tagline:c.tagline,eyebrow:state.room.hide_eyebrow?'':c.eyebrow,headline:state.welcome_headline??c.headline,
         description:c.description,footer:c.footer};
     for(const [key,value] of Object.entries(text)){
         const node=$('copy-'+key);
@@ -166,7 +168,7 @@ function renderCopy(){
             state.welcome_headline==null&&shown==='What should we play next?'&&!state.headline_accent);
         else node.textContent=shown;
     }
-    $('copy-headline').closest('.intro').hidden=['headline','description'].every(key=>!text[key]?.trim());
+    $('copy-headline').closest('.intro').hidden=['eyebrow','headline','description'].every(key=>!text[key]?.trim());
 }
 function renderUpcomingTracks(items){
     const list=$('spotify-tracks');
@@ -198,8 +200,18 @@ field(grid,'Theme name','cfg-theme','text',r.theme);field(grid,'Suggested search
 const appForm=el('form',undefined,'host-card');appForm.id='host-app-config';const appGrid=el('div',undefined,'config-grid');
 field(appGrid,'Stats timezone','cfg-timezone','text',r.timezone);
 appForm.append(el('p','Leave a field blank to hide it on the guest page.','muted'));
-for(const [key,label]of Object.entries({tagline:'Header tagline',headline:'Main headline',description:'Intro description',footer:'Footer tagline'})){const input=field(appGrid,label,'cfg-copy-'+key,'text',r.copy[key]);input.maxLength=300;const list=el('datalist');list.id='copy-options-'+key;for(const text of state.presets[key]||[]){const option=el('option');option.value=text;list.append(option);}input.setAttribute('list',list.id);appGrid.append(list);}
-addHeadlineAccent(appGrid,$('cfg-copy-headline')||appGrid.querySelector('#cfg-copy-headline'),'cfg-headline-accent',r.headline_accent);
+for(const [key,label] of Object.entries({tagline:'Header tagline',eyebrow:'Guest eyebrow'})){
+    field(appGrid,label,'cfg-copy-'+key,'text',r.copy[key]).maxLength=300;
+}
+field(appGrid,'Hide eyebrow','cfg-hide-eyebrow','checkbox',r.hide_eyebrow);
+const headlineFields=el('div',undefined,'headline-fields');
+appGrid.append(headlineFields);
+const mainHeadline=field(headlineFields,'Main headline','cfg-copy-headline','text',r.copy.headline);
+mainHeadline.maxLength=300;
+addHeadlineAccent(headlineFields,mainHeadline,'cfg-headline-accent',r.headline_accent);
+for(const [key,label] of Object.entries({description:'Intro description',footer:'Footer tagline'})){
+    field(appGrid,label,'cfg-copy-'+key,'text',r.copy[key]).maxLength=300;
+}
 const roomStatus=el('p',undefined,'muted');
 roomStatus.setAttribute('role','status');
 form.append(grid,el('p','Rules apply when requesting and when selecting a waiting track. Already handed-off tracks stay protected.','muted'),roomStatus);
@@ -216,8 +228,8 @@ const reset=el('button','Restore default wording','secondary');
 reset.type='button';appActions.append(reset);appForm.append(appGrid,appActions,appStatus);
 const appAutosave=bindSettingsAutosave(appForm,{status:appStatus,read:()=>{
     const copy={};
-    for(const key of ['tagline','headline','description','footer'])copy[key]=$('cfg-copy-'+key).value;
-    return {copy,headline_accent:$('cfg-headline-accent').value,timezone:$('cfg-timezone').value};
+    for(const key of ['tagline','eyebrow','headline','description','footer'])copy[key]=$('cfg-copy-'+key).value;
+    return {copy,hide_eyebrow:$('cfg-hide-eyebrow').checked,headline_accent:$('cfg-headline-accent').value,timezone:$('cfg-timezone').value};
 },apply:value=>api('/api/host/config',value),saved:(_result,value)=>{
     if(value.defaults){configBuilt=false;refresh();}
 }});

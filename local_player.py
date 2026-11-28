@@ -96,6 +96,7 @@ class LocalPlayback:
         self.local_error=''
         self.player_missing=False
         self.soloist_maintenance_job = None
+        self.soloist_session_check = None
         self.soloist_status_due = 0
         self.boot_probe = None
         self.boot_probe_due = 0
@@ -428,6 +429,29 @@ class LocalPlayback:
         self.set_meta('soloist_update_status', {'device':self.device, **result})
         return result
 
+    def check_soloist_on_session_start(self):
+        if not self.local_bound():
+            return
+        device, connection = self.device, self.local
+        job = self.soloist_session_check = {'device':device, 'connection':connection}
+        self.set_meta('soloist_update_status', {})
+
+        def read():
+            try:
+                job['result'] = connection.call('soloist_update_status')
+            except f.Failure:
+                job['result'] = None
+
+        threading.Thread(target=read, daemon=True).start()
+
+    def collect_soloist_session_status(self):
+        job = self.soloist_session_check
+        if not job or 'result' not in job:
+            return
+        self.soloist_session_check = None
+        if job['result'] and job['device'] == self.device and job['connection'] is self.local:
+            self.set_meta('soloist_update_status', {**job['result'], 'device':self.device})
+
     def queue_soloist_update(self, action):
         if not self.local_bound():
             raise f.Failure('Select the linked Pine64 and save its player connection first.')
@@ -501,7 +525,10 @@ class LocalPlayback:
                 hour, enabled = body.get('hour'), body.get('enabled')
                 if type(hour) is not int or not 0 <= hour <= 23 or type(enabled) is not bool:
                     raise f.Failure('Choose a maintenance hour from 0 to 23.')
-                self.set_meta('soloist_update_schedule', {'hour':hour, 'enabled':enabled})
+                warn_days = body.get('warn_days', self.meta('soloist_update_schedule', {}).get('warn_days', 14))
+                if type(warn_days) is not int or not 0 <= warn_days <= 90:
+                    raise f.Failure('Choose an expiry warning threshold from 0 to 90 days.')
+                self.set_meta('soloist_update_schedule', {'hour':hour, 'enabled':enabled, 'warn_days':warn_days})
                 return {'ok':True}
             if action in ('check', 'stage'):
                 return self.queue_soloist_update(action)
@@ -676,18 +703,24 @@ class LocalPlayback:
         name = query.get('artist_name', [''])[0].strip()
         if not offset and name and len(name) <= 150 and not any(fields[k] for k in ('track','album','year')) and fields['exact'] != '1':
             if 'top_matches' not in entry:
-                try:
-                    ranked = self.api.call('/search', params={
-                        'q':'artist:"' + name.replace('"', '').replace(chr(92), '') + '"',
-                        'type':'track', 'limit':10,
-                    }).get('tracks', {}).get('items', [])
-                except f.Failure:
-                    ranked = []
                 matches = {}
-                for item in ranked:
-                    if (item and f.TRACK.fullmatch(item.get('uri') or '') and item.get('is_playable') is not False
-                            and not item.get('restrictions') and any(a.get('id') == artist_id for a in item.get('artists') or [])):
-                        matches.setdefault(item['uri'], track(item))
+                search_artist = name.replace('"', '').replace(chr(92), '')
+                for page_offset in range(0, 40, 10):
+                    try:
+                        ranked = self.api.call('/search', params={
+                            'q':'artist:"' + search_artist + '"', 'type':'track',
+                            'limit':10, 'offset':page_offset,
+                        }).get('tracks', {})
+                    except f.Failure:
+                        break
+                    for item in ranked.get('items', []):
+                        if (item and f.TRACK.fullmatch(item.get('uri') or '') and item.get('is_playable') is not False
+                                and not item.get('restrictions') and any(a.get('id') == artist_id for a in item.get('artists') or [])):
+                            matches.setdefault(item['uri'], track(item))
+                            if len(matches) == 10:
+                                break
+                    if len(matches) == 10 or not ranked.get('next'):
+                        break
                 entry['top_matches'] = list(matches.values())
             top_matches = entry['top_matches']
         else:

@@ -96,8 +96,10 @@ class MixedPlaybackTests(unittest.TestCase):
                     if params['type'] == 'artist':
                         return {'artists':{'items':[{'id':identifier,'name':title}]}}
                     self.assertEqual(params['q'], f'artist:"{title}"')
-                    return {'tracks':{'items':[song(11),dict(song(13),artists=[{'id':'wrong'}]),
-                                               song(0),song(11)]}}
+                    if params['offset'] == 0:
+                        return {'tracks':{'items':[song(11),dict(song(13),artists=[{'id':'wrong'}]),
+                                                   song(0),song(11)],'next':'page'}}
+                    return {'tracks':{'items':[song(n) for n in range(1, 11)]}}
                 if path.endswith('/albums'):
                     return {'items':[{'id':album_one,'name':'First'},{'id':album_two,'name':'Second'},
                                      {'id':compilation,'name':'Various'}]}
@@ -112,7 +114,7 @@ class MixedPlaybackTests(unittest.TestCase):
                 self.assertEqual(result['artists'][0]['id'], identifier)
                 query = {'mode':['artist'],'artist_id':[identifier],'artist_name':[title],'limit':['10']}
                 first = self.app.mixed_search(query)
-                self.assertEqual([t['name'] for t in first['top_matches']], [title+'11',title+'0'])
+                self.assertEqual([t['name'] for t in first['top_matches']], [title+str(n) for n in (11, 0, *range(1, 9))])
                 self.assertEqual(len(first['items']), 10)
                 self.assertTrue(first['more'])
                 second = self.app.mixed_search(dict(query,offset=['10']))

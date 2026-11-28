@@ -108,6 +108,24 @@ class LocalPlayerTests(unittest.TestCase):
         self.app.action(self.sid, route, body)
         self.app.api.api.call.assert_called_with('/me/player/volume', 'PUT', None, {'device_id':'speaker','volume_percent':0})
 
+    def test_session_soloist_expiry_warning_is_host_only_and_configurable(self):
+        self.app.device = 'speaker'
+        self.app.local_config.update(enabled=True, device='speaker')
+        self.app.local = Mock()
+        expires = local_player.time.time() + 12 * 86400
+        self.app.local.call.return_value = {'installed':{'expires_at':expires}}
+        with patch('local_player.threading.Thread') as thread:
+            self.app.check_soloist_on_session_start()
+            self.assertIsNone(self.app.room_state(self.sid)['soloist_expiry_warning'])
+            thread.call_args.kwargs['target']()
+        self.app.collect_soloist_session_status()
+        self.assertEqual(self.app.room_state(self.sid)['soloist_expiry_warning'], expires)
+        guest, _ = self.app.session('')
+        self.assertIsNone(self.app.room_state(guest)['soloist_expiry_warning'])
+        self.app.action(self.sid, '/api/host/soloist-update',
+                        {'action':'schedule','enabled':False,'hour':3,'warn_days':7})
+        self.assertIsNone(self.app.room_state(self.sid)['soloist_expiry_warning'])
+
     def test_soloist_update_rejects_active_playback_before_remote_apply(self):
         self.app.local_config.update(enabled=True, device='speaker')
         self.app.device = 'speaker'

@@ -394,10 +394,13 @@ class RoomFeatures(RequestHistory):
         custom_welcome = welcomes.get(self.device, '').strip()
         welcome = None if use_main else custom_welcome or ('Welcome to ' + player_name if player_name else None)
         maintenance = self.meta('soloist_update_status', {}) if host else {}
+        expires = (maintenance.get('installed') or {}).get('expires_at') if maintenance.get('device') == self.device else None
+        warn_days = self.meta('soloist_update_schedule', {}).get('warn_days', 14) if host else 14
+        expiry_warning = expires if type(expires) in (float, int) and 0 < expires <= time.time() + warn_days * 86400 else None
         return {'welcome_headline': welcome,
                 'player_auto_start': self.meta('player_auto_start', {}) if host else {},
                 'boot_start_status': self.meta('boot_start_status', {}) if host else {},
-                'soloist_expiry_warning': bool(maintenance.get('device') == self.device and maintenance.get('expiry_warning')),
+                'soloist_expiry_warning': expiry_warning,
                 'soloist_schedule_warning': self.meta('soloist_update_schedule_message', '') if host else '',
                 'guest_library': {'device':self.device, 'name':player_name} if self.local_bound() else None,
                 'player_welcomes': welcomes if host else {},

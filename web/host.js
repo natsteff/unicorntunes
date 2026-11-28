@@ -90,13 +90,14 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
     shell.innerHTML = `
       <div class="host-help-links"><button id="host-help" type="button" class="secondary" aria-controls="host-start-guide">Help</button><p id="host-start-reminder" class="muted"></p><a class="secondary host-guest-link" href="/">Guest page</a></div>
       <details id="host-start-guide" class="host-card"><summary>How to Start a Session</summary>
-        <ol><li>Sign into the Host desk and turn on the playback player and speakers.</li>
-        <li>Refresh players and select the room’s player. For the garage, choose UnicornPlayer - Garage.</li>
-        <li>Check the Spotify account. Save background music in Player settings or add a song to the queue.</li>
-        <li>Choose Start session, then check that it says Running and you can hear music. If it is already running, leave it running.</li></ol>
-        <p>If the player is missing or there is no sound, check power, speaker volume and the connection.</p>
+        <p><strong>Start automatically.</strong> With <strong>Start session on power-on</strong> enabled in Player settings, turn on the player and speakers. Garage has taken about a minute to start playing. Wait for <strong>Running</strong> before sending requests.</p>
+        <p><strong>Start manually.</strong> If automatic start is off, refresh players, choose the room’s player, then select <strong>Start session</strong>. Check for Running and audible playback.</p>
+        <p><strong>Restart the same gathering.</strong> Use <strong>Stop handoff</strong> to keep music playing, or <strong>Pause playback</strong> to stop the music. Then select <strong>Start session</strong>.</p>
+        <p><strong>Start a new gathering.</strong> Open <strong>Gathering → New gathering</strong> to archive waiting requests and reset gathering stats and protected turns. Return to <strong>Playback → Start session</strong>.</p>
         <button type="button" class="secondary" data-host-go="setup">Open Setup &amp; troubleshooting</button>
+        <p class="host-shutdown-callout"><strong>Whenever possible, use End Session before turning off power.</strong> Wait for the Pine64 to finish shutting down before switching off the amp.</p>
       </details>
+      <div id="host-soloist-expiry" class="host-shutdown-callout" hidden><p id="host-soloist-expiry-text" role="status"></p><button type="button" class="secondary" id="host-soloist-jump">Soloist updates</button></div>
       <div class="host-overview">
         <div><span class="host-eyebrow">SESSION STATUS</span><h3 id="host-state">Checking session…</h3><p id="host-now"></p><p id="host-next-step" role="status"></p></div>
         <div class="host-destination"><span class="host-eyebrow">CURRENT PLAYER</span><strong id="host-current-player">No player selected</strong><span id="host-request-state"></span><p id="host-account-summary" class="muted">Spotify account: checking…</p></div>
@@ -124,7 +125,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
             <div class="host-action-row"><button id="host-end-session" type="button" class="host-danger">End Session</button><p>Archive queued requests, reset the gathering, and shut down the linked Pine64.</p></div><p id="host-end-status" class="host-shutdown-callout" role="status"></p>
           </div>
         </div>
-        <p id="host-background-status" role="status"></p><p id="host-soloist-expiry" role="status"></p>
+        <p id="host-background-status" role="status"></p>
         <div id="host-background-warning" class="host-card" hidden><p>No background music selected for this configuration. Choose a playlist to keep music playing after requests run out.</p><button type="button" class="secondary" data-background-pick="player">Choose a playlist</button></div>
         <div class="host-help-links"><button type="button" class="secondary" data-host-volume>Volume controls</button><button type="button" class="secondary" data-host-go="player">Player settings</button><button type="button" class="secondary" data-host-go="setup">Player setup &amp; connection help</button></div>
       </section>
@@ -146,11 +147,13 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         <div class="host-card"><h4>Guest welcome</h4>
           <label class="host-inline-toggle"><input type="checkbox" id="host-main-headline-mode"> Use the Main headline</label>
           <p id="host-headline-mode-status" role="status"></p>
-          <p id="host-main-headline-preview" class="headline-preview" aria-label="Main headline preview" hidden></p><form id="host-player-welcome-form" class="host-settings-form">
-          <label for="host-player-welcome">Welcome for this player</label><input type="text" id="host-player-welcome" maxlength="300">
+          <div id="host-inherited-preview" hidden><strong>Headline Preview:</strong><p id="host-main-headline-preview" class="headline-preview"></p></div><form id="host-player-welcome-form" class="host-settings-form">
+          <div class="headline-fields">
+            <label for="host-player-welcome">Welcome for this player<input type="text" id="host-player-welcome" maxlength="300"></label>
+            <label for="host-player-accent">Highlight in red for player headline<input type="text" id="host-player-accent" maxlength="300"></label>
+            <div class="headline-preview-group"><strong>Headline Preview:</strong><p id="host-player-welcome-preview" class="headline-preview"></p></div>
+          </div>
           <p class="muted">Leave blank to use the default welcome.</p><p id="host-player-welcome-current" class="muted"></p>
-          <label for="host-player-accent">Text to highlight in red</label><input type="text" id="host-player-accent" maxlength="300">
-          <p id="host-player-welcome-preview" class="headline-preview" aria-label="Welcome preview"></p>
           <div class="buttons"><button type="button" class="secondary" id="host-player-welcome-restore">Reset to default</button></div>
         </form><p id="host-player-welcome-status" role="status"></p></div>
         <div class="host-card"><h4>Power-on behavior</h4>
@@ -195,11 +198,11 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
       </section>
       <section id="host-panel-setup" class="host-panel" role="tabpanel" aria-labelledby="host-tab-setup" tabindex="0" hidden>
         <div class="host-panel-heading"><h3>Setup &amp; troubleshooting</h3><p>Check Spotify authorization and diagnose playback connections.</p></div>
-        <div class="host-card"><h4>Soloist updates</h4>
+        <div class="host-card"><h4 id="host-soloist-heading" tabindex="-1">Soloist updates</h4>
           <p>Check and stage the official ARM64 build on the linked Pine64. Applying an update restarts Soloist.</p>
           <div class="buttons"><button type="button" class="secondary" data-soloist-action="status">Read update status</button><button type="button" class="secondary" data-soloist-action="check">Check for update</button><button type="button" class="secondary" data-soloist-action="stage">Download and stage</button><button type="button" class="secondary" data-soloist-action="apply">Apply and restart</button></div>
           <p id="host-soloist-update-status" role="status"></p>
-          <form id="host-soloist-schedule" class="host-settings-form"><label><input type="checkbox" id="host-soloist-scheduled"> Apply staged updates when idle</label><label for="host-soloist-hour">Maintenance hour (0–23, UnicornTunes timezone)</label><input type="number" id="host-soloist-hour" min="0" max="23" value="3" required></form>
+          <form id="host-soloist-schedule" class="host-settings-form"><label><input type="checkbox" id="host-soloist-scheduled"> Apply staged updates when idle</label><label for="host-soloist-hour">Maintenance hour (0–23, UnicornTunes timezone)</label><input type="number" id="host-soloist-hour" min="0" max="23" value="3" required><label for="host-soloist-warn-days">Warn before expiry (days)</label><input type="number" id="host-soloist-warn-days" min="0" max="90" value="14" required></form>
         </div>
         <div class="host-card" id="host-spotify-slot"><h4>Spotify authorization</h4><p class="muted">Use the same Spotify account as the playback device. Reconnect only when changing accounts, granting permissions or fixing authorization.</p></div>
         <div class="host-card"><h4>Connected Spotify account</h4><p id="host-account-details" role="status">Checking authorization…</p><p class="muted">This is UnicornTunes' authorized Spotify account. It does not independently verify Soloist pairing. Account checks are cached for up to five minutes.</p><button id="host-account-refresh" type="button" class="secondary">Check account</button></div><div class="host-card"><h4>Playback diagnostics</h4><p>Download recent actions, transitions and failures for troubleshooting. Credentials, account names and raw Spotify responses are omitted. Track/player identifiers are hashed. Reports cover recent activity since this container started.</p><button id="host-diagnostics-download" type="button" class="secondary">Download diagnostic report</button><p id="host-diagnostics-status" role="status"></p></div><div class="host-card" id="host-recovery-slot"></div><button type="button" class="secondary" data-host-go="player">Open player settings</button>
@@ -270,6 +273,10 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         guide.open=true;
         guide.querySelector('summary').focus();
     };
+    $('host-soloist-jump').onclick=()=>{
+        select('setup');
+        $('host-soloist-heading').focus();
+    };
     window.showHostSection=select;
     $('save').setAttribute('aria-describedby','host-start-help');
     window.renderHostDesk=(current,dirty)=>{
@@ -280,10 +287,14 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         renderVolumeControls(current);
         refreshRunningVolumes(current);
         renderShutdownProgress(current);
-        $('host-soloist-expiry').textContent=current.soloist_expiry_warning?
-            'Soloist expiry is approaching. Check Soloist updates in Setup & troubleshooting. '+(current.soloist_schedule_warning||''):'';
+        const expiry=current.soloist_expiry_warning;
+        $('host-soloist-expiry').hidden=!expiry;
+        $('host-soloist-expiry-text').textContent=expiry?
+            'Soloist '+(expiry*1000<=Date.now()?'expired on ':'expires on ')+
+            new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeZone:current.room?.timezone}).format(expiry*1000)+'.':'';
         const scheduleDraft=scheduleAutosave.draft();
         $('host-soloist-hour').value=scheduleDraft?.hour??current.soloist_update_schedule?.hour??3;
+        $('host-soloist-warn-days').value=scheduleDraft?.warn_days??current.soloist_update_schedule?.warn_days??14;
         $('host-soloist-scheduled').checked=scheduleDraft?.enabled??!!current.soloist_update_schedule?.enabled;
         const health=current.handoff||{}, running=!!current.enabled;
         $('host-state').textContent=health.status|| (running?'Running':'Stopped');
@@ -389,7 +400,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         mainMode.checked=modeAutosave.draft()?.enabled??!!current.player_main_headline?.[selected];
         $('host-player-welcome-form').hidden=mainMode.checked;
         const preview=$('host-main-headline-preview');
-        preview.hidden=!mainMode.checked;
+        $('host-inherited-preview').hidden=!mainMode.checked;
         const heading=current.room?.copy?.headline||'', accent=current.room?.headline_accent||'';
         if(typeof renderHeadline==='function')renderHeadline(preview,heading||'Main headline is blank.',accent,
             heading==='What should we play next?'&&!accent);
@@ -490,7 +501,7 @@ function bindSettingsAutosave(form, {status, scope=()=>'', read, apply, delay=65
         finally{soloistButtons.forEach(button=>{button.disabled=false;});}
     };
     const scheduleAutosave=bindSettingsAutosave($('host-soloist-schedule'),{
-        status:soloistStatus,read:()=>({action:'schedule',hour:$('host-soloist-hour').valueAsNumber,enabled:$('host-soloist-scheduled').checked}),
+        status:soloistStatus,read:()=>({action:'schedule',hour:$('host-soloist-hour').valueAsNumber,warn_days:$('host-soloist-warn-days').valueAsNumber,enabled:$('host-soloist-scheduled').checked}),
         apply:value=>api('/api/host/soloist-update',value)
     });
     const spotifyLevel=$('host-spotify-volume');

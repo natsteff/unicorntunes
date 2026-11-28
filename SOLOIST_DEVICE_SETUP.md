@@ -54,6 +54,8 @@ Install restricted agent 8 on the linked Pine64 as the audio user. From the publ
 
 In **Host desk → Setup & troubleshooting → Soloist updates**, select **Read update status** to see the build date, expiry and staged build. Enable scheduled application and choose the maintenance hour in the configured UnicornTunes timezone. The Docker worker checks within that hour while it is running. It applies only when handoff is stopped, requests are resolved, Spotify is idle and MPD reports stopped. A busy or unverifiable player defers the update. The host can also check, stage or apply manually.
 
+When a session starts automatically or manually, UnicornTunes reads the linked player’s installed Soloist expiry in the background. **Warn before expiry (days)** defaults to 14. The Host Desk shows the expiry date when the build enters that window or has already expired. This warning threshold is independent of the staging window and maintenance hour.
+
 The updater preserves the service and paired data, backs up the executable and verifies the restarted user service. The Host desk reports whether Spotify discovery was observed. Confirm audible playback after applying a build.
 
 ## Validate Spotify playback
