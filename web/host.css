@@ -40,7 +40,8 @@
 #host .host-settings-form input[type=checkbox]{width:auto;margin:0 8px 0 0;vertical-align:middle}
 #host-editing-player{color:#fff}
 
-#host .host-volume-grid input[type=number],#host .host-settings-form input[type=text]{display:block;background:#090909;border:1px solid #666;border-radius:6px;padding:11px;color:#fff;margin:6px 0}
+#host .host-volume-grid input[type=number],#host .host-settings-form input[type=text],#host-soloist-hour[type=number]{display:block;background:#090909;border:1px solid #666;border-radius:6px;padding:11px;color:#fff;margin:6px 0}
+#host-soloist-hour{max-width:10rem}
 #host .host-volume-grid input:disabled{opacity:1;color:#aaa;border-color:#444}
 #host .host-inline-toggle{display:flex;gap:8px;align-items:center}
 #host .host-danger{background:#a62622;color:#fff;border:1px solid #ef5550}
