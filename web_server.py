@@ -461,12 +461,19 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             self.arm_background()
         self.request_playback_refresh()
 
+    @staticmethod
+    def spotify_track_playing(state):
+        item = state.get('item') or {}
+        duration = item.get('duration_ms') or 0
+        return bool(state.get('is_playing') and item.get('uri') and
+                    (not duration or (state.get('progress_ms') or 0) < duration))
+
     def confirm_background_start(self, state):
         pending = self.startup_pending
         device = pending['device']
         actual = (state.get('device') or {}).get('id')
         context = self.normalized_context(state)
-        playing = actual == device and state.get('is_playing') and (state.get('item') or {}).get('uri')
+        playing = actual == device and self.spotify_track_playing(state)
         now = time.monotonic()
         if actual == device:
             pending['seen_target'] = True
@@ -485,7 +492,10 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         confirmed = playing and (not expected or context == expected or
                                  (not context and progressed and now >= pending['grace']))
         if confirmed:
-            if not state.get('shuffle_state') and state.get('repeat_state') in (None, 'off'):
+            allow_shuffle = (bool(expected and expected.startswith('spotify:playlist:')) and
+                             self.meta('player_background_shuffle', {}).get(device, True))
+            needs_shuffle_off = state.get('shuffle_state') is True and not allow_shuffle
+            if not needs_shuffle_off and state.get('repeat_state') in (None, 'off'):
                 try:
                     self.finish_session_start(device, pending['accepting'], state, seed)
                 except OSError as error:
@@ -495,7 +505,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                 self.startup_pending = None
                 self.diagnostics.emit('background.start_confirmed', context_reported=bool(context))
                 return True
-            settings = (('shuffle', state.get('shuffle_state') is True, 'false'),
+            settings = (('shuffle', needs_shuffle_off, 'false'),
                         ('repeat', state.get('repeat_state') not in (None, 'off'), 'off'))
             for name, needs_change, value in settings:
                 if not needs_change or now < pending.get(name + '_retry_at', 0) or pending.get(name + '_sent'):
@@ -508,6 +518,21 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                     pending[name + '_retry_at'] = now + 2
                 else:
                     pending[name + '_sent'] = True
+        # After a confirmed API read with no playback, give Connect time to
+        # settle before replaying a saved context once on the same target.
+        if expected and not state.get('is_playing') and actual is None:
+            missing_since = pending.setdefault('missing_since', now)
+            if not pending.get('recovery_checked') and 5 <= now - missing_since and now < pending['deadline']:
+                pending['recovery_checked'] = True
+                devices = self.api.call('/me/player/devices').get('devices', [])
+                available = any(d.get('id') == device and not d.get('is_restricted') for d in devices)
+                elsewhere = any(d.get('is_active') and d.get('id') != device for d in devices)
+                if available and not elsewhere:
+                    self.diagnostics.emit('background.start_recovering')
+                    self.api.call('/me/player/play', 'PUT', {'context_uri':expected}, {'device_id':device})
+                    pending.update(grace=now+4, deadline=now+18)
+        else:
+            pending.pop('missing_since', None)
         if now >= pending['deadline']:
             self.diagnostics.emit('background.start_unconfirmed', target_observed=actual==device,
                                   context_state='matched' if context==pending['uri'] else 'different' if context else 'missing',
@@ -556,7 +581,9 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         start_waiting_spotify = bool(seed_local and not locked and not seed_local['uri'].startswith('local:'))
         current = self.api.call('/me/player')
         already_selected = (current.get('device') or {}).get('id') == device
-        if already_selected and current.get('is_playing'):
+        playing_on_target = already_selected and self.spotify_track_playing(current)
+        keep_background = bool(playing_on_target and startup_context and self.normalized_context(current) == startup_context)
+        if playing_on_target and not keep_background:
             startup_context = None
         # A remote mutation may change playback even if its response is lost.
         # Stop dispatch until the selected target and playing state are observed.
@@ -564,7 +591,8 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         self.reason = 'Starting selected player.'
         try:
             if startup_context:
-                startup_context = self.play_background({'uri': startup_context}, device)
+                if not keep_background:
+                    startup_context = self.play_background({'uri': startup_context}, device)
                 started = time.monotonic()
                 self.startup_pending = {'uri':startup_context, 'device':device, 'accepting':accepting,
                                         'previous_device':(current.get('device') or {}).get('id'),

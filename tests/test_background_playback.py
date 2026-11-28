@@ -211,6 +211,44 @@ class BackgroundTests(unittest.TestCase):
         writes = [event[3] for event in self.events if event[:3]==('spotify','/me/player/play','PUT')]
         self.assertEqual(writes, [{'context_uri':CONTEXT},{'uris':[A]}])
 
+    def test_startup_recovers_after_terminal_track_and_missing_player(self):
+        self.save_background()
+        item = self.spotify.state['item']
+        self.spotify.state.update(context={'uri':CONTEXT}, shuffle_state=True, repeat_state='off',
+                                  progress_ms=item['duration_ms'])
+        original = self.spotify.call
+
+        def call(path, method='GET', payload=None, params=None):
+            if path == '/me/player/play' and method == 'PUT' and 'context_uri' in payload:
+                self.events.append(('spotify', path, method, payload))
+                return {}
+            return original(path, method, payload, params)
+
+        self.enterContext(patch.object(self.spotify, 'call', side_effect=call))
+        self.app.start_session('speaker', True)
+        self.assertFalse(self.app.enabled)
+        self.assertIsNotNone(self.app.startup_pending)
+        self.spotify.state.clear()
+        self.app.poll(True)
+        self.app.startup_pending['missing_since'] -= 6
+        self.app.poll(True)
+        self.app.poll(True)
+        writes = [event[3] for event in self.events if event[:3] == ('spotify','/me/player/play','PUT')]
+        self.assertEqual(writes, [{'context_uri':CONTEXT}, {'context_uri':CONTEXT}])
+        self.assertFalse(any(event[:3] == ('spotify','/me/player/shuffle','PUT') for event in self.events))
+        self.spotify.state.update(device={'id':'speaker'}, item=item, progress_ms=2000,
+                                  is_playing=True, context={'uri':CONTEXT}, shuffle_state=True, repeat_state='off')
+        self.app.poll(True)
+        self.assertTrue(self.app.enabled)
+        self.assertFalse(any(event[:3] == ('spotify','/me/player/shuffle','PUT') for event in self.events))
+        self.app.submit(self.sid, A)
+        self.app.poll(True)
+        self.assertTrue(any(event[:3] == ('spotify','/me/player/shuffle','PUT') for event in self.events))
+        self.spotify.state['shuffle_state'] = False
+        self.app.poll(True)
+        writes = [event[3] for event in self.events if event[:3] == ('spotify','/me/player/play','PUT')]
+        self.assertEqual(writes, [{'context_uri':CONTEXT}, {'context_uri':CONTEXT}, {'uris':[A]}])
+
     def test_nonmatching_context_cannot_confirm_start_and_host_stop_cancels_pending(self):
         self.save_background()
         self.spotify.state.update(is_playing=False, item=None)
