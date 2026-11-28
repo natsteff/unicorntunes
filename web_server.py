@@ -206,6 +206,10 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
                 raise f.Failure('Spotify did not confirm shuffle was off. Request order is on hold.')
             if observed is not True or time.monotonic() < retry['next_attempt']:
                 return False
+            if retry['status'] == 404:
+                devices = self.api.call('/me/player/devices').get('devices', [])
+                if not any(d.get('id') == self.device and not d.get('is_restricted') for d in devices):
+                    return False
         key = (self.device, enabled)
         if sent and sent[:2] == key:
             if not enabled and time.monotonic()-sent[2] >= 12:
@@ -214,11 +218,14 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         try:
             self.api.call('/me/player/shuffle', 'PUT', params={'state':'true' if enabled else 'false','device_id':self.device})
         except f.Failure as error:
-            if enabled or error.status not in (502, 503, 504) or retry:
+            if enabled or error.status not in (404, 502, 503, 504):
                 raise
+            if retry:
+                raise f.Failure('Spotify still could not turn shuffle off on the selected player. Check player availability and shuffle before resuming requests.',
+                                status=error.status, provider_reason=error.provider_reason) from error
             now = time.monotonic()
             self.background_shuffle_command = None
-            self.shuffle_disable_retry = {'device':self.device, 'next_attempt':now+2, 'deadline':now+12}
+            self.shuffle_disable_retry = {'device':self.device, 'next_attempt':now+2, 'deadline':now+12, 'status':error.status}
             self.diagnostics.emit('background.shuffle_rechecking', status=error.status)
             self.request_playback_refresh()
             return False
@@ -226,6 +233,30 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         self.diagnostics.emit('background.shuffle_requested', enabled=enabled)
         self.request_playback_refresh()
         return False
+
+    def play_requested_spotify(self, row):
+        try:
+            self.api.call('/me/player/play', 'PUT', {'uris':[row['uri']]}, {'device_id':self.device})
+        except f.Failure as error:
+            if error.status not in (502, 503, 504) and not error.uncertain:
+                raise
+            for _ in range(3):
+                try:
+                    observed = self.api.call('/me/player')
+                except f.Failure:
+                    break
+                actual = (observed.get('device') or {}).get('id')
+                if actual and actual != self.device:
+                    break
+                attempt = self.db.execute('SELECT before_uri FROM request_attempts WHERE song=?', (row['id'],)).fetchone()
+                if (actual == self.device and attempt and attempt['before_uri'] != row['uri'] and
+                        self.confirm_attempt(observed, dict(row, state='accepted'))):
+                    self.diagnostics.emit('request.play_confirmed_after_error', status=error.status)
+                    return observed
+                time.sleep(.5)
+            raise f.Failure('Spotify did not confirm the requested track after a play error. Check the selected player and reconcile the request before retrying.',
+                            uncertain=True, status=error.status) from error
+        return None
 
     def start_idle_request(self, row):
         if row['uri'].startswith('local:'):
@@ -239,13 +270,17 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
         self.idle_ready = False
         try:
             # Queue insertion alone cannot start an exhausted Spotify player.
-            self.api.call('/me/player/play', 'PUT', {'uris': [row['uri']]}, {'device_id': self.device})
+            observed = self.play_requested_spotify(row)
         except f.Failure as error:
             self.db.execute("UPDATE songs SET state='uncertain',detail=? WHERE id=?", (str(error), row['id']))
             self.db.commit()
             raise
-        self.db.execute("UPDATE songs SET state='accepted',detail='Request start accepted; awaiting observed playback' WHERE id=?", (row['id'],))
-        self.db.commit()
+        if observed:
+            self.observe_play(observed)
+            self.request_playback_refresh()
+        else:
+            self.db.execute("UPDATE songs SET state='accepted',detail='Request start accepted; awaiting observed playback' WHERE id=?", (row['id'],))
+            self.db.commit()
 
     def poll(self, force=False):
         if not force and time.monotonic() < self.next_poll:
@@ -283,11 +318,18 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             try:
                 state = self.api.call('/me/player')
             except f.Failure as error:
-                if ((self.startup_pending and time.monotonic() < self.startup_pending['deadline']) or
+                if ((self.shuffle_disable_retry and self.enabled and error.status == 404 and
+                     time.monotonic() < self.shuffle_disable_retry['deadline']) or
+                        (self.startup_pending and time.monotonic() < self.startup_pending['deadline']) or
                         (self.enabled and time.monotonic() < self.startup_settle_until and error.status == 404)):
                     self.next_poll = time.monotonic() + 1
                     return
                 raise
+            if (self.enabled and self.shuffle_disable_retry and
+                    time.monotonic() < self.shuffle_disable_retry['deadline'] and
+                    not (state.get('device') or {}).get('id')):
+                self.next_poll = time.monotonic() + 1
+                return
             if (self.enabled and time.monotonic() < self.startup_settle_until and
                     not (state.get('device') or {}).get('id') and not self.idle_ready):
                 self.next_poll = time.monotonic() + 1
@@ -321,13 +363,7 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             if not (row or owned):
                 self.shuffle_disable_retry = None
             if (row or owned) and actual == self.device:
-                try:
-                    if not self.sync_background_shuffle(state, False):
-                        return
-                except f.Failure as error:
-                    if error.status != 404 or time.monotonic() >= self.startup_settle_until:
-                        raise
-                    self.next_poll = time.monotonic() + 2
+                if not self.sync_background_shuffle(state, False):
                     return
             configured = self.effective_background(self.device).get('uri') or ''
             context = self.normalized_context(state)
@@ -705,30 +741,34 @@ class App(RoomFeatures, LocalPlayback, BackgroundPlayback, DiagnosticFeatures):
             if not chosen and owned and resume:
                 self.finish_last_request_skip(before)
                 return
+            recovered = None
             if chosen and not pending:
-                if before.get('shuffle_state') is True and not self.sync_background_shuffle(before, False):
+                if not self.sync_background_shuffle(before, False):
                     for _ in range(4):
                         observed = self.api.call('/me/player')
-                        if self.sync_background_shuffle(observed, False):
+                        if (observed.get('device') or {}).get('id') not in (None, self.device):
+                            raise f.Failure('Spotify moved to another player during Next track.')
+                        if (observed.get('device') or {}).get('id') == self.device and self.sync_background_shuffle(observed, False):
                             break
-                        time.sleep(.5)
+                        time.sleep(1)
                     else:
                         raise f.Failure('Spotify has not confirmed shuffle is off. Wait and try Next track again.')
                 self.check_rules(chosen)
                 self.commit_selection(chosen['id'])
                 self.capture_background(before)
                 self.arm_background()
-                self.record_attempt(chosen,'direct')
+                self.record_attempt(chosen, 'direct', before={'uri':before_uri,
+                    'progress_ms':before.get('progress_ms'), 'playing':before.get('is_playing')})
                 self.db.execute("UPDATE songs SET state='sending' WHERE id=?", (chosen['id'],))
                 self.db.commit()
                 mutated = True
-                self.api.call('/me/player/play', 'PUT', {'uris': [chosen['uri']]}, {'device_id': self.device})
+                recovered = self.play_requested_spotify(chosen)
             else:
                 # Do not queue or directly play an already-handed-off URI twice.
                 mutated = True
                 self.api.call('/me/player/next', 'POST', params={'device_id': self.device})
             for attempt in range(4):
-                observed = self.api.call('/me/player')
+                observed = recovered or self.api.call('/me/player')
                 item = observed.get('item') or {}
                 target = chosen['uri'] if chosen else None
                 changed = item.get('uri') == target if target else bool(item.get('uri') and item.get('uri') != before_uri)
@@ -919,6 +959,10 @@ STATIC_TYPES = {'host.webmanifest': 'application/manifest+json', 'legacy.html': 
 
 
 def handler(app):
+    web_root = Path(__file__).parent / 'web'
+    assets = {url.encode(): hashlib.sha256((web_root / filename).read_bytes()).hexdigest()[:12].encode()
+              for url, filename in STATIC_FILES.items() if filename.endswith(('.css', '.js'))}
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -932,10 +976,11 @@ def handler(app):
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Referrer-Policy', 'no-referrer')
             self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' https://i.scdn.co https://mosaic.scdn.co https://image-cdn-ak.spotifycdn.com data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+            secure = '; Secure' if getattr(self, 'secure_origin', False) else ''
             if cookie:
-                self.send_header('Set-Cookie', 'ft_session=' + cookie + '; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800' + ('; Secure' if app.public_url.startswith('https://') else ''))
+                self.send_header('Set-Cookie', self.session_cookie + '=' + cookie + '; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800' + secure)
             if getattr(self, 'guest_token', None):
-                self.send_header('Set-Cookie', 'ft_guest=' + self.guest_token + '; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000' + ('; Secure' if app.public_url.startswith('https://') else ''))
+                self.send_header('Set-Cookie', self.guest_cookie + '=' + self.guest_token + '; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000' + secure)
             self.end_headers()
             self.wfile.write(raw)
 
@@ -955,6 +1000,15 @@ def handler(app):
                     # Explicit allowed authorities prevent DNS-rebinding requests to arbitrary hosts.
                     if host not in self.server.allowed_hosts:
                         raise PermissionError('Unknown host.')
+                    primary = app.public_url or 'http://' + host
+                    configured = urlsplit(primary)
+                    scheme = self.headers.get('X-Forwarded-Proto', '')
+                    origin = (scheme + '://' + host if app.public_url and host == configured.netloc and
+                              scheme in ('http', 'https') else primary)
+                    self.secure_origin = origin.startswith('https://')
+                    alternate = origin != primary
+                    prefix = ('__Secure-' if self.secure_origin else 'http-') if alternate else ''
+                    self.session_cookie, self.guest_cookie = prefix + 'ft_session', prefix + 'ft_guest'
                     parsed = urlsplit(self.path)
                     if not post:
                         if parsed.path == '/healthz':
@@ -962,7 +1016,13 @@ def handler(app):
                             return
                         if parsed.path in STATIC_FILES:
                             name = STATIC_FILES[parsed.path]
-                            raw = (Path(__file__).parent / 'web' / name).read_bytes()
+                            raw = (web_root / name).read_bytes()
+                            if name == 'index.html':
+                                for url, revision in assets.items():
+                                    raw = raw.replace(b'"' + url + b'"', b'"' + url + b'?v=' + revision + b'"')
+                                if parsed.path == '/':
+                                    raw = raw.replace(b'<body>', b'<body class="guest-page">', 1)
+                                    raw = raw.replace(b'class="now"', b'class="now guest-now"', 1)
                             if parsed.path == '/host':
                                 raw = raw.replace(b'content="UnicornTunes"', b'content="Host Desk"', 2)
                                 raw = raw.replace(b'<title>UnicornTunes</title>', b'<title>Host Desk</title>', 1)
@@ -981,16 +1041,17 @@ def handler(app):
                         if parsed.path not in ('/api/state', '/api/search', '/api/stats', '/api/playlist-items',
                                 '/api/host/playlists', '/api/host/devices', '/api/host/spotify-login', '/callback'):
                             raise LookupError('Not found.')
-                    elif self.headers.get('Origin') != (app.public_url or 'http://' + host):
-                        raise PermissionError('Open Host Desk at the configured address: ' + (app.public_url or 'http://' + host) + '/host')
+                    elif self.headers.get('Origin') != origin:
+                        page = '/host' if parsed.path.startswith('/api/host/') else '/'
+                        raise PermissionError('Open UnicornTunes at ' + origin + page + ' and try again.')
                     cookies = SimpleCookie(self.headers.get('Cookie', ''))
-                    old = cookies.get('ft_session')
+                    old = cookies.get(self.session_cookie)
                     sid, session = app.session(old.value if old else '', create=not post)
-                    guest_cookie = cookies.get('ft_guest')
+                    guest_cookie = cookies.get(self.guest_cookie)
                     self.guest_token = app.attach_guest(sid, guest_cookie.value if guest_cookie else '')
                     if post:
                         if self.headers.get('X-FoxTunes-CSRF') != session['csrf']:
-                            raise PermissionError('Your session changed. Reload Host Desk and try again.')
+                            raise PermissionError('Your session changed. Reload this page and try again.')
                         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
                             raise ValueError('JSON required.')
                         length = int(self.headers.get('Content-Length', 0))

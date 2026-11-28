@@ -276,6 +276,50 @@ class BackgroundTests(unittest.TestCase):
         self.app.poll(True)
         self.assertTrue(any(event[:3]==('spotify','/me/player/play','PUT') for event in self.events))
 
+    def test_established_session_rechecks_shuffle_404_and_dispatches_once(self):
+        self.save_background()
+        self.spotify.state.update(context={'uri':CONTEXT}, shuffle_state=True)
+        self.app.submit(self.sid, A)
+        original = self.app.api.call
+
+        def call(path, method='GET', payload=None, params=None):
+            if path == '/me/player/shuffle' and method == 'PUT':
+                raise f.Failure('Device not found', status=404)
+            return original(path, method, payload, params)
+
+        with patch.object(self.app.api, 'call', side_effect=call) as api:
+            self.app.poll(True)
+            self.assertTrue(self.app.enabled)
+            self.assertEqual(self.app.queue(self.sid)[0]['state'], 'waiting')
+            with patch.dict(self.spotify.state, {'device':None}):
+                self.app.poll(True)
+            self.assertTrue(self.app.enabled)
+            self.spotify.state['shuffle_state'] = False
+            self.app.poll(True)
+            writes = [request.args[:2] for request in api.call_args_list
+                      if len(request.args) > 1 and request.args[1] == 'PUT']
+            self.assertEqual(writes, [('/me/player/shuffle', 'PUT'), ('/me/player/play', 'PUT')])
+
+    def test_persistent_shuffle_404_stops_without_dispatch(self):
+        self.spotify.state['shuffle_state'] = True
+        self.app.submit(self.sid, A)
+        original = self.app.api.call
+
+        def call(path, method='GET', payload=None, params=None):
+            if path == '/me/player/shuffle' and method == 'PUT':
+                raise f.Failure('Device not found', status=404)
+            return original(path, method, payload, params)
+
+        with patch.object(self.app.api, 'call', side_effect=call) as api:
+            self.app.poll(True)
+            self.app.shuffle_disable_retry['next_attempt'] = 0
+            self.app.poll(True)
+            self.assertFalse(self.app.enabled)
+            self.assertEqual(self.app.queue(self.sid)[0]['state'], 'waiting')
+            writes = [request.args[:2] for request in api.call_args_list
+                      if len(request.args) > 1 and request.args[1] == 'PUT']
+            self.assertEqual(writes, [('/me/player/shuffle', 'PUT')]*2)
+
     def test_shuffle_502_rechecks_before_dispatching_first_request(self):
         self.save_background()
         self.spotify.state.update(context={'uri':CONTEXT}, shuffle_state=True)

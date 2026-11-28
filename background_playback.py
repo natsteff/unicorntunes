@@ -180,6 +180,7 @@ class BackgroundPlayback:
         if playing and (context == pending['uri'] or (not context and progressed and time.monotonic() >= pending.get('grace', pending['deadline']))):
             self.background_pending = None
             self.verified_background_context = (pending['device'], pending['uri'])
+            self.upcoming_due = 0
             self.diagnostics.emit('background.resume_confirmed', context_reported=bool(context))
             if not pending.get('fallback'):
                 self.background_message = ''

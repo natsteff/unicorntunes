@@ -104,6 +104,7 @@ class ObservedSpotify:
                 diag.emit('spotify.operation', method=method if method in ('GET','PUT','POST','DELETE') else 'OTHER',
                           endpoint=endpoint(path), outcome='failed', category=category(error),
                           status=getattr(error, 'status', None) if isinstance(getattr(error, 'status', None),int) else None,
+                          provider_reason=getattr(error, 'provider_reason', None),
                           duration_ms=round((time.monotonic()-started)*1000))
                 diag.failure('spotify.failure', before, category(error))
                 raise

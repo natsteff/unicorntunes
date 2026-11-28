@@ -70,3 +70,15 @@
   .guest-now .nowprogress{margin:6px 0}
   .guest-now .reactions{margin-top:6px}
 }
+
+@media(max-width:760px){
+  .guest-page main{padding-top:20px}
+  .guest-page .intro{padding-bottom:8px}
+  .guest-page .intro h1{margin:6px 0 8px}
+  .guest-page .intro p{margin:5px 0}
+  .guest-page #room-toolbar{margin-bottom:10px}
+  .guest-page #playback-health{margin:6px 0 10px}
+  .guest-page .guest-now{margin-bottom:12px}
+  .guest-page .upnext .sectionhead{margin-bottom:8px}
+  .guest-page #queue-policy{margin:6px 0 10px}
+}

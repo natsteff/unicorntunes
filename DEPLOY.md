@@ -55,7 +55,7 @@ Create a Proxy Host:
 
 Local DNS must resolve `unicorntunes.nate` to Nginx Proxy Manager from guest phones/tablets too. Add SSL only with a certificate covering this name, whose issuer your devices trust. An internal wildcard certificate may require installing the internal CA on devices. Do not bypass certificate warnings.
 
-If trusted HTTPS works, enable Force SSL and set `FOXTUNES_PUBLIC_URL=https://unicorntunes.nate`, then recreate the container with `docker compose up -d`. UnicornTunes uses the configured origin for CSRF checks and secure cookies. It does not trust arbitrary forwarded headers or infer TLS from them. The browser must use that exact origin. Keep the backend private so clients access it through Nginx.
+To serve both HTTP and HTTPS, leave **Force SSL** off and configure a trusted certificate. To redirect all browser traffic to HTTPS, enable **Force SSL**. Set `FOXTUNES_PUBLIC_URL` to the preferred public address and recreate the container after changing it. For the configured hostname, the proxy must overwrite X-Forwarded-Proto with its own request scheme. UnicornTunes checks each browser POST against that scheme and the configured authority, and uses separate cookies when serving both schemes. Keep the configured public URL for shared links and the Spotify callback. Keep the backend private so clients access it through Nginx.
 
 See `deploy/nginx.conf.example` for a plain Nginx equivalent. Proxy/certificate/DNS setup is performed on your infrastructure, not by the image.
 

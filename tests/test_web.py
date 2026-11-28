@@ -143,6 +143,8 @@ class WebTests(unittest.TestCase):
                 html = response.read().decode()
             self.assertIn('<title>Host Desk</title>', html)
             self.assertIn('href="/host.webmanifest"', html)
+            self.assertRegex(html, r'src="/app\.js\?v=[0-9a-f]{12}"')
+            self.assertRegex(html, r'href="/style\.css\?v=[0-9a-f]{12}"')
             self.assertEqual(request(clients[0], '/host.webmanifest')['start_url'], '/host')
             states = [request(c, '/api/state') for c in clients]
             self.assertEqual(len({s['csrf'] for s in states}), 3)
@@ -292,6 +294,37 @@ class PackagingTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
+    def test_proxy_allows_both_schemes_and_rejects_cross_origin(self):
+        self.app.public_url = 'http://foxtunes.example'
+        server = w.make_server(self.app, port=0, allowed=['foxtunes.example'])
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = 'http://127.0.0.1:'+str(server.server_address[1])
+        try:
+            for scheme, uri in (('http', A), ('https', B)):
+                self.app.catalog[uri] = {'uri':uri,'name':'Test track','artists':'Test artist'}
+                headers = {'Host':'foxtunes.example', 'X-Forwarded-Proto':scheme}
+                with urllib.request.urlopen(urllib.request.Request(base+'/api/state',headers=headers)) as response:
+                    state = json.load(response)
+                    cookie = response.headers['Set-Cookie']
+                    self.assertEqual('Secure' in cookie, scheme == 'https')
+                headers.update({'Origin':'https://wrong.example', 'Cookie':cookie.split(';')[0],
+                                'Content-Type':'application/json', 'X-FoxTunes-CSRF':state['csrf']})
+                login = json.dumps({'password':self.app.password}).encode()
+                for wrong_origin in ('https://wrong.example', ('http' if scheme=='https' else 'https')+'://foxtunes.example'):
+                    headers['Origin'] = wrong_origin
+                    with self.assertRaises(urllib.error.HTTPError) as rejected:
+                        urllib.request.urlopen(urllib.request.Request(base+'/api/host/login',data=login,headers=headers))
+                    self.assertEqual(rejected.exception.code, 403)
+                headers['Origin'] = scheme+'://foxtunes.example'
+                request = json.dumps({'uri':uri}).encode()
+                with urllib.request.urlopen(urllib.request.Request(base+'/api/request',data=request,headers=headers)) as response:
+                    self.assertEqual(response.status,200)
+                with urllib.request.urlopen(urllib.request.Request(base+'/api/host/login',data=login,headers=headers)) as response:
+                    self.assertEqual(response.status,200)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
 class SessionStartTests(unittest.TestCase):
     setUp = WebTests.setUp
     tearDown = WebTests.tearDown
@@ -411,6 +444,23 @@ class SkipRequestTests(unittest.TestCase):
                 self.api.state['item']={'uri':getattr(self,'next_uri',C),'duration_ms':100000}
             return result
         return call
+
+    def test_skip_confirms_play_502_without_replaying(self):
+        from unittest.mock import patch
+        self.app.submit(self.sessions[0], A)
+        original = self.prepare()
+
+        def call(path, method='GET', payload=None, params=None):
+            response = original(path, method, payload, params)
+            if path == '/me/player/play' and method == 'PUT':
+                raise f.Failure('Bad gateway', status=502)
+            return response
+
+        with patch.object(self.api, 'call', side_effect=call):
+            self.app.skip_request()
+        self.assertEqual(self.app.now['uri'], A)
+        self.assertTrue(self.app.enabled)
+        self.assertEqual(len([c for c in self.api.calls if c[:2]==('/me/player/play','PUT')]),1)
 
     def test_skip_respects_protected_next_and_keeps_running(self):
         from unittest.mock import patch

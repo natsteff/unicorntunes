@@ -24,10 +24,11 @@ TRACK = re.compile(r'^spotify:track:[A-Za-z0-9]{22}$')
 
 
 class Failure(Exception):
-    def __init__(self, message, uncertain=False, status=None):
+    def __init__(self, message, uncertain=False, status=None, provider_reason=None):
         super().__init__(message)
         self.uncertain = uncertain
         self.status = status
+        self.provider_reason = provider_reason
 
 
 def private_write(path, value):
@@ -63,7 +64,22 @@ def request_json(url, method='GET', body=None, headers=None, on_response=None):
         retry = error.headers.get('Retry-After', 'unspecified')
         if error.code == 429:
             raise Failure('Spotify returned 429; stop and retry after %s seconds. Quota may require a longer wait.' % retry, status=429)
-        raise Failure('Spotify HTTP %s. Check account, scopes and device; no automatic retry.' % error.code, status=error.code)
+        reason = None
+        if url.startswith('https://api.spotify.com/v1/me/player'):
+            try:
+                detail = json.loads(error.read(4096)).get('error')
+                if isinstance(detail, dict):
+                    value = detail.get('reason')
+                    allowed = ('NO_ACTIVE_DEVICE', 'DEVICE_NOT_FOUND', 'RESTRICTION_VIOLATED',
+                               'PREMIUM_REQUIRED', 'NOT_PLAYING_LOCALLY', 'UNKNOWN')
+                    if value in allowed:
+                        reason = value
+                    elif detail.get('message') in ('Player command failed: No active device found', 'No active device found'):
+                        reason = 'NO_ACTIVE_DEVICE'
+            except (OSError, ValueError, AttributeError):
+                pass
+        raise Failure('Spotify HTTP %s. Check account, scopes and device; no automatic retry.' % error.code,
+                      status=error.code, provider_reason=reason)
     except (OSError, ValueError) as error:
         raise Failure('Network/response failure; reconcile before retrying a playback command.', uncertain=method != 'GET') from error
 
@@ -101,7 +117,7 @@ class Spotify:
                                 on_response=lambda status: setattr(self, 'last_status', status))
         except Failure as error:
             # Fixed API path only: no query, account ID, token or response body.
-            raise Failure(method + ' ' + path + ': ' + str(error), uncertain=error.uncertain, status=error.status) from error
+            raise Failure(method + ' ' + path + ': ' + str(error), uncertain=error.uncertain, status=error.status, provider_reason=error.provider_reason) from error
 
 
 class Ledger:
